@@ -20,9 +20,9 @@ pip install -r requirements.txt
 Set env vars:
 - `GITHUB_TOKEN` (required for GitHub tools)
 - `GITHUB_BASE_URL` (optional for GitHub Enterprise)
-- `OPENAI_API_KEY` (optional for AI analysis)
-- `OPENAI_BASE_URL` (optional, defaults to `https://api.openai.com/v1`)
-- `OPENAI_MODEL` (optional, defaults to `gpt-4o-mini`)
+- `LLM_API_KEY` (optional for AI analysis)
+- `LLM_BASE_URL` (optional, defaults to `https://api.llm-model.com/v1`)
+- `LLM_MODEL` (optional, defaults to `Open-Source Model`)
 
 Run:
 
