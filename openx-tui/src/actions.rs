@@ -8,9 +8,8 @@ pub enum Action {
     ClearInput,
     Submit,
     CancelStreaming,
+    UnfocusInput,
 
-    ChatScrollUp,
-    ChatScrollDown,
     ChatScrollPageUp,
     ChatScrollPageDown,
     ChatScrollTop,
@@ -25,3 +24,4 @@ pub enum Action {
     PaletteDown,
     PaletteSelect,
 }
+

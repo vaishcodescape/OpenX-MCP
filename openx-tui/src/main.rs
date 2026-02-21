@@ -5,6 +5,7 @@ mod app;
 mod backend;
 mod commands;
 mod events;
+mod git;
 mod services;
 mod state;
 mod ui;
@@ -66,7 +67,7 @@ fn run_loop(
 
         if event::poll(TICK_RATE).map_err(anyhow::Error::msg)? {
             if let Event::Key(key) = event::read().map_err(anyhow::Error::msg)? {
-                let action = key_to_action(&key, app.state.palette.visible);
+                let action = key_to_action(&key, app.state.palette.visible, app.input_has_focus());
                 if let Some(a) = action {
                     app.dispatch(a);
                     if app.should_quit {

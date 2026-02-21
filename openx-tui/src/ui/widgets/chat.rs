@@ -1,11 +1,12 @@
-//! Chat: high-visibility message blocks (white text on dark bg).
+//! Chat: multi-color message blocks with role icons and timestamps. 
 
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, BorderType, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
+use std::time::SystemTime;
 
 use crate::state::{ChatState, MessageRole};
 use crate::ui::markdown;
@@ -14,6 +15,18 @@ use crate::ui::theme::{colors, MESSAGE_GAP};
 /// Use pure white for chat body so it's visible in any terminal.
 const CHAT_TEXT: Color = Color::White;
 
+/// Format a SystemTime as "HH:MM".
+fn format_time(t: &SystemTime) -> String {
+    let secs = t
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let total_mins = secs / 60;
+    let hours = (total_mins / 60) % 24;
+    let mins = total_mins % 60;
+    format!("{:02}:{:02}", hours, mins)
+}
+
 pub fn render(
     f: &mut Frame,
     chat: &ChatState,
@@ -21,7 +34,16 @@ pub fn render(
     loading: bool,
     spinner_char: char,
 ) {
+    let block = Block::default()
+        .borders(Borders::NONE)
+        .style(Style::default().bg(colors::BG));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let height = inner.height as usize;
     let mut lines: Vec<Line> = Vec::new();
+
+    // ── Build message lines ──────────────────────────────────────
     let mut first_message = true;
 
     for msg in &chat.messages {
@@ -32,10 +54,29 @@ pub fn render(
         }
         first_message = false;
 
-        let (label, label_style) = match msg.role {
-            MessageRole::User => ("You", Style::default().fg(colors::ACCENT).add_modifier(Modifier::BOLD)),
-            MessageRole::OpenX => ("OpenX", Style::default().fg(colors::ACCENT_SOFT).add_modifier(Modifier::BOLD)),
-            MessageRole::System => ("", Style::default().fg(colors::TEXT_DIM)),
+        let (icon, label, label_style, time_str) = match msg.role {
+            MessageRole::User => (
+                "❯ ",
+                "You",
+                Style::default()
+                    .fg(colors::USER_ROLE)
+                    .add_modifier(Modifier::BOLD),
+                format_time(&msg.timestamp),
+            ),
+            MessageRole::OpenX => (
+                "◆ ",
+                "OpenX",
+                Style::default()
+                    .fg(colors::OPENX_ROLE)
+                    .add_modifier(Modifier::BOLD),
+                format_time(&msg.timestamp),
+            ),
+            MessageRole::System => (
+                "● ",
+                "",
+                Style::default().fg(colors::SYSTEM),
+                String::new(),
+            ),
         };
 
         let content_style = Style::default().fg(CHAT_TEXT);
@@ -44,27 +85,40 @@ pub fn render(
         } else {
             msg.content
                 .lines()
-                .map(|s| Line::from(Span::styled(s, content_style)))
+                .map(|s| Line::from(Span::styled(s.to_string(), content_style)))
                 .collect()
         };
 
+        // First line: icon + label + timestamp + first content line.
         let mut it = content_lines.into_iter();
         if let Some(first) = it.next() {
-            let mut spans = if label.is_empty() {
-                vec![]
+            let mut spans: Vec<Span> = Vec::new();
+            if label.is_empty() {
+                // System messages — icon + content inline.
+                spans.push(Span::styled(icon.to_string(), label_style));
             } else {
-                vec![Span::styled(format!("{} ", label), label_style.clone())]
-            };
+                spans.push(Span::styled(
+                    format!("{}{}", icon, label),
+                    label_style,
+                ));
+                spans.push(Span::styled(" ", content_style));
+                if !time_str.is_empty() {
+                    spans.push(Span::styled(
+                        format!("{} ", time_str),
+                        Style::default().fg(colors::TIMESTAMP),
+                    ));
+                }
+            }
             for s in first {
                 spans.push(s);
             }
             lines.push(Line::from(spans));
         }
+
+        // Continuation lines with consistent indent.
+        let indent = if label.is_empty() { "  " } else { "        " };
         for line in it {
-            let mut spans = vec![Span::styled(
-                if label.is_empty() { "" } else { "     " },
-                content_style,
-            )];
+            let mut spans = vec![Span::styled(indent.to_string(), content_style)];
             for s in line {
                 spans.push(s);
             }
@@ -72,6 +126,7 @@ pub fn render(
         }
     }
 
+    // ── Streaming / loading indicator ────────────────────────────
     if loading && chat.streaming_content.is_empty() {
         if !lines.is_empty() {
             for _ in 0..MESSAGE_GAP {
@@ -79,9 +134,17 @@ pub fn render(
             }
         }
         lines.push(Line::from(vec![
-            Span::styled("OpenX ", Style::default().fg(colors::ACCENT_SOFT).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {} ", spinner_char), Style::default().fg(colors::ACCENT)),
-            Span::styled("Thinking…", Style::default().fg(CHAT_TEXT)),
+            Span::styled(
+                "◆ OpenX ",
+                Style::default()
+                    .fg(colors::OPENX_ROLE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{} ", spinner_char),
+                Style::default().fg(colors::ACCENT),
+            ),
+            Span::styled("Thinking…", Style::default().fg(colors::TEXT_DIM)),
         ]));
     } else if !chat.streaming_content.is_empty() {
         if !lines.is_empty() {
@@ -90,33 +153,33 @@ pub fn render(
             }
         }
         lines.push(Line::from(vec![
-            Span::styled("OpenX ", Style::default().fg(colors::ACCENT_SOFT).add_modifier(Modifier::BOLD)),
-            Span::styled(chat.streaming_content.as_str(), Style::default().fg(CHAT_TEXT)),
+            Span::styled(
+                "◆ OpenX ",
+                Style::default()
+                    .fg(colors::OPENX_ROLE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                chat.streaming_content.clone(),
+                Style::default().fg(CHAT_TEXT),
+            ),
         ]));
     }
 
+    // Empty state — minimal prompt.
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "Ask anything.  /  command palette · Enter to send",
-            Style::default().fg(CHAT_TEXT),
+            "Type a message to get started.",
+            Style::default().fg(colors::MUTED),
         )));
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(colors::BORDER))
-        .style(Style::default().bg(colors::BG));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let height = inner.height as usize;
+    // ── Scroll and render ────────────────────────────────────────
     let total = lines.len();
     let scroll = chat.scroll.min(total.saturating_sub(height));
     let visible: Vec<Line> = lines.into_iter().skip(scroll).take(height).collect();
     let para = Paragraph::new(visible)
         .style(Style::default().fg(CHAT_TEXT).bg(colors::BG))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll as u16, 0));
+        .wrap(Wrap { trim: false });
     f.render_widget(para, inner);
 }

@@ -73,6 +73,9 @@ pub struct AppState {
     pub history_index: usize,
     pub palette: PaletteState,
     pub loading: bool,
+    /// When true (or input_buffer is non-empty), bare-key shortcuts are
+    /// suppressed and characters go straight to the input buffer.
+    pub input_focused: bool,
 }
 
 impl AppState {

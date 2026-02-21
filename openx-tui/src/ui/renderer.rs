@@ -8,8 +8,6 @@ use crate::ui::layout;
 use crate::ui::theme::SPINNER;
 use crate::ui::widgets::{render_chat, render_input, render_palette, render_status};
 
-const PALETTE_OVERLAY_HEIGHT: u16 = 14;
-
 pub fn render(f: &mut Frame, app: &App, tick: usize) {
     let area = f.area();
     let regions = layout::compute(area);
@@ -28,15 +26,26 @@ pub fn render(f: &mut Frame, app: &App, tick: usize) {
         app.state.input_buffer(),
         app.state.input_cursor(),
         regions.input,
+        app.input_has_focus(),
     );
-    render_status(f, regions.status, app.state.loading, spinner_char);
+    render_status(
+        f,
+        regions.status,
+        app.state.loading,
+        spinner_char,
+        &app.git_branch,
+        app.connected,
+        app.input_has_focus(),
+    );
 
     if app.state.palette.visible {
+        // Overlay palette inside the chat area (bottom of chat region).
+        let max_palette_h = regions.chat.height.saturating_sub(2).min(16);
         let palette_area = Rect {
-            x: area.x,
-            y: area.y + area.height.saturating_sub(PALETTE_OVERLAY_HEIGHT + 2),
-            width: area.width,
-            height: PALETTE_OVERLAY_HEIGHT,
+            x: regions.chat.x,
+            y: regions.chat.y + regions.chat.height.saturating_sub(max_palette_h),
+            width: regions.chat.width,
+            height: max_palette_h,
         };
         render_palette(f, &app.state.palette, palette_area);
     }
