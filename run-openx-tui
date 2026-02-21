@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+cd "$(dirname "$0")/openx-tui"
+cargo build --release
+exec env OPENX_BASE_URL="${OPENX_BASE_URL:-http://127.0.0.1:8000}" ./target/release/openx-tui
