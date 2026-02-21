@@ -1,4 +1,4 @@
-# OpenX MCP Server
+# OpenX  
 
 FastAPI-based MCP server for GitHub operations (PRs, repos, CI/CD) plus code analysis and architecture insights.
 
