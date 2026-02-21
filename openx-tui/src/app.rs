@@ -3,6 +3,7 @@
 use crate::actions::Action;
 use crate::backend::{BackendClient, ToolInfo};
 use crate::commands::update_palette_filter;
+use crate::git;
 use crate::services::{format_output, normalize_slash_command};
 use crate::state::{CommandEntry, Message};
 
@@ -12,6 +13,10 @@ pub struct App {
     pub should_quit: bool,
     /// For spinner animation (incremented each tick).
     pub tick: usize,
+    /// Current git branch (cached at startup).
+    pub git_branch: String,
+    /// Whether backend is reachable.
+    pub connected: bool,
 }
 
 impl App {
@@ -21,31 +26,75 @@ impl App {
             client,
             should_quit: false,
             tick: 0,
+            git_branch: git::git_branch(),
+            connected: false,
         }
     }
 
+    /// Input has focus when the buffer is non-empty or explicitly focused.
+    pub fn input_has_focus(&self) -> bool {
+        self.state.input_focused || !self.state.input_buffer.is_empty()
+    }
+
     pub fn bootstrap(&mut self) {
-        let _connected = self.client.health_check();
+        self.connected = self.client.health_check();
         self.state.chat.messages.push(Message::system(
-            "OpenX. Type a command and press Enter. Use / for command palette.".to_string(),
+            "Welcome to OpenX. Type a message or use / for command palette.".to_string(),
         ));
+
+        // Built-in commands (always available, even without backend).
+        let builtins: Vec<CommandEntry> = vec![
+            CommandEntry { name: "/help".into(), description: "Show help and available commands".into() },
+            CommandEntry { name: "/tools".into(), description: "List all available MCP tools".into() },
+            CommandEntry { name: "/schema".into(), description: "Show tool schema / parameters".into() },
+            CommandEntry { name: "/call".into(), description: "Call a tool directly".into() },
+            CommandEntry { name: "/analyzerepo".into(), description: "Analyze a repository".into() },
+            CommandEntry { name: "/listrepos".into(), description: "List repositories".into() },
+            CommandEntry { name: "/listprs".into(), description: "List pull requests".into() },
+            CommandEntry { name: "/getpr".into(), description: "Get pull request details".into() },
+            CommandEntry { name: "/commentpr".into(), description: "Comment on a pull request".into() },
+            CommandEntry { name: "/mergepr".into(), description: "Merge a pull request".into() },
+            CommandEntry { name: "/listworkflows".into(), description: "List CI/CD workflows".into() },
+            CommandEntry { name: "/triggerworkflow".into(), description: "Trigger a workflow run".into() },
+            CommandEntry { name: "/listworkflowruns".into(), description: "List workflow runs".into() },
+            CommandEntry { name: "/getworkflowrun".into(), description: "Get workflow run details".into() },
+            CommandEntry { name: "/getfailingprs".into(), description: "Get PRs with failing CI".into() },
+            CommandEntry { name: "/getcilogs".into(), description: "Get CI logs for a run".into() },
+            CommandEntry { name: "/analyzecifailure".into(), description: "Analyze a CI failure".into() },
+            CommandEntry { name: "/locatecodecontext".into(), description: "Locate relevant code context".into() },
+            CommandEntry { name: "/generatefixpatch".into(), description: "Generate a fix patch".into() },
+            CommandEntry { name: "/applyfixtopr".into(), description: "Apply a fix to a pull request".into() },
+            CommandEntry { name: "/rerunci".into(), description: "Re-run CI for a workflow".into() },
+        ];
+        self.state.palette.commands = builtins;
+
+        // Merge backend tools on top if available.
         if let Ok(tools) = self.client.list_tools() {
-            self.state.palette.commands = tools
+            let extra: Vec<CommandEntry> = tools
                 .into_iter()
+                .filter(|t| {
+                    !self.state.palette.commands.iter().any(|c| c.name == t.name)
+                })
                 .map(|t: ToolInfo| CommandEntry {
                     name: t.name,
                     description: t.description,
                 })
                 .collect();
-            update_palette_filter(&mut self.state.palette);
+            self.state.palette.commands.extend(extra);
         }
+        update_palette_filter(&mut self.state.palette);
     }
 
     pub fn dispatch(&mut self, action: Action) {
         match action {
             Action::Quit => self.should_quit = true,
+            Action::UnfocusInput => {
+                self.state.input_focused = false;
+            }
 
             Action::Char(c) => {
+                // Auto-focus when the user begins typing.
+                self.state.input_focused = true;
                 let pos = self.state.input_cursor.min(self.state.input_buffer.len());
                 self.state.input_buffer.insert(pos, c);
                 self.state.input_cursor = pos + c.len_utf8();
@@ -70,6 +119,7 @@ impl App {
             Action::ClearInput => {
                 self.state.input_buffer.clear();
                 self.state.input_cursor = 0;
+                self.state.input_focused = false;
                 self.state.palette.visible = false;
             }
             Action::Submit => self.submit_input(),
@@ -79,8 +129,6 @@ impl App {
                 self.state.chat.streaming_content.clear();
             }
 
-            Action::ChatScrollUp => self.state.chat.scroll = self.state.chat.scroll.saturating_sub(1),
-            Action::ChatScrollDown => self.state.chat.scroll = self.state.chat.scroll.saturating_add(1),
             Action::ChatScrollPageUp => {
                 self.state.chat.scroll = self.state.chat.scroll.saturating_sub(10);
             }
@@ -152,6 +200,7 @@ impl App {
         self.state.palette.visible = false;
         self.state.input_buffer.clear();
         self.state.input_cursor = 0;
+        self.state.input_focused = false;
 
         let command = normalize_slash_command(&raw);
         if self.state.history.last().as_deref() != Some(&raw) {

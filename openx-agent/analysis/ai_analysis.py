@@ -20,7 +20,7 @@ def analyze_with_ai(summary: dict) -> dict[str, Any]:
     if not settings.huggingface_api_key:
         return {
             "enabled": False,
-            "message": "HUGGINGFACE_API_KEY not set",
+            "message": "LLM_API_KEY not set",
             "findings": [],
         }
 
