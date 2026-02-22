@@ -1,13 +1,30 @@
 //! Status bar: git branch, connection status, shortcut pills — multi-color.
 
 use ratatui::{
-    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
 
-use crate::ui::theme::colors;
+use crate::ui::theme::styles;
+
+/// Shortcut pills when input has focus.
+const PILLS_FOCUSED: &[(&str, &str)] = &[
+    ("Esc", "unfocus"),
+    ("Enter", "send"),
+    ("Ctrl+C", "cancel"),
+];
+
+/// Shortcut pills when input does not have focus.
+const PILLS_UNFOCUSED: &[(&str, &str)] = &[
+    ("/", "commands"),
+    ("PgUp/Dn", "scroll"),
+    ("q", "quit"),
+];
+
+fn span_width(s: &Span) -> usize {
+    s.content.chars().count()
+}
 
 pub fn render(
     f: &mut Frame,
@@ -18,89 +35,49 @@ pub fn render(
     connected: bool,
     input_focused: bool,
 ) {
-    let mut left_spans: Vec<Span> = Vec::new();
+    let mut left_spans = Vec::with_capacity(8);
 
-    // Connection indicator dot.
-    if connected {
-        left_spans.push(Span::styled(" ● ", Style::default().fg(colors::GREEN)));
-    } else {
-        left_spans.push(Span::styled(" ● ", Style::default().fg(colors::ERROR)));
-    }
+    let conn_style = if connected { styles::green() } else { styles::error() };
+    left_spans.push(Span::styled(" ● ", conn_style));
 
-    // Git branch.
     if !git_branch.is_empty() && git_branch != "no-git" {
         left_spans.push(Span::styled(
-            format!(" {} ", git_branch),
-            Style::default()
-                .fg(colors::GREEN)
-                .add_modifier(Modifier::BOLD),
+            format!(" {git_branch} "),
+            styles::green_bold(),
         ));
-        left_spans.push(Span::styled("│", Style::default().fg(colors::BORDER)));
+        left_spans.push(Span::styled("│", styles::border()));
     }
 
-    // Loading indicator.
     if loading {
         left_spans.push(Span::styled(
-            format!(" {} ", spinner_char),
-            Style::default().fg(colors::ACCENT),
+            format!(" {spinner_char} "),
+            styles::accent(),
         ));
-        left_spans.push(Span::styled(
-            "Thinking… ",
-            Style::default().fg(colors::TEXT_DIM),
-        ));
+        left_spans.push(Span::styled("Thinking… ", styles::text_dim()));
     } else {
-        left_spans.push(Span::styled(
-            " Ready ",
-            Style::default().fg(colors::MUTED),
-        ));
+        left_spans.push(Span::styled(" Ready ", styles::muted()));
     }
 
-    // Calculate left width.
-    let left_width: usize = left_spans.iter().map(|s| s.content.chars().count()).sum();
+    let left_width: usize = left_spans.iter().map(span_width).sum();
+    let pills = if input_focused { PILLS_FOCUSED } else { PILLS_UNFOCUSED };
 
-    // Right-side shortcut pills — context-aware.
-    let pills: Vec<(&str, &str)> = if input_focused {
-        vec![
-            ("Esc", "unfocus"),
-            ("Enter", "send"),
-            ("Ctrl+C", "cancel"),
-        ]
-    } else {
-        vec![
-            ("/", "commands"),
-            ("PgUp/Dn", "scroll"),
-            ("q", "quit"),
-        ]
-    };
-
-    let mut right_spans: Vec<Span> = Vec::new();
-    for (key, label) in &pills {
-        right_spans.push(Span::styled(
-            format!(" {} ", key),
-            Style::default()
-                .fg(colors::BG)
-                .bg(colors::MUTED),
-        ));
-        right_spans.push(Span::styled(
-            format!(" {} ", label),
-            Style::default().fg(colors::MUTED),
-        ));
+    let mut right_spans = Vec::with_capacity(pills.len() * 2);
+    for (key, label) in pills {
+        right_spans.push(Span::styled(format!(" {key} "), styles::pill_key()));
+        right_spans.push(Span::styled(format!(" {label} "), styles::muted()));
     }
 
-    let right_width: usize = right_spans.iter().map(|s| s.content.chars().count()).sum();
+    let right_width: usize = right_spans.iter().map(span_width).sum();
+    let pad = (area.width as usize)
+        .saturating_sub(left_width)
+        .saturating_sub(right_width);
 
-    // Pad between left and right.
-    let width = area.width as usize;
-    let pad = width.saturating_sub(left_width + right_width);
-
-    let mut all_spans = left_spans;
-    all_spans.push(Span::styled(
+    left_spans.push(Span::styled(
         " ".repeat(pad),
-        Style::default().bg(colors::ELEVATED),
+        styles::elevated_bg(),
     ));
-    all_spans.extend(right_spans);
+    left_spans.extend(right_spans);
 
-    let line = Line::from(all_spans);
-    let para = Paragraph::new(line).style(Style::default().bg(colors::ELEVATED));
+    let para = Paragraph::new(Line::from(left_spans)).style(styles::elevated_bg());
     f.render_widget(para, area);
 }

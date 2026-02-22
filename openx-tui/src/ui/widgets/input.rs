@@ -2,13 +2,13 @@
 
 use ratatui::{
     layout::Position,
-    style::{Modifier, Style},
+    style::Modifier,
     text::{Line, Span},
     widgets::{Block, Borders, BorderType, Paragraph},
     Frame,
 };
 
-use crate::ui::theme::colors;
+use crate::ui::theme::styles;
 
 pub fn render(
     f: &mut Frame,
@@ -17,44 +17,36 @@ pub fn render(
     area: ratatui::prelude::Rect,
     input_focused: bool,
 ) {
-    let border_color = if input_focused {
-        colors::ACCENT
+    let border_style = if input_focused {
+        styles::accent()
     } else {
-        colors::BORDER
+        styles::border()
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .style(Style::default().bg(colors::ELEVATED));
+        .border_style(border_style)
+        .style(styles::elevated_bg());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let prompt_icon = if input_focused { "❯ " } else { "▸ " };
 
     let line = if buffer.is_empty() {
+        let icon_style = if input_focused {
+            styles::accent_bold()
+        } else {
+            styles::muted().add_modifier(Modifier::BOLD)
+        };
         Line::from(vec![
-            Span::styled(
-                prompt_icon,
-                Style::default()
-                    .fg(if input_focused { colors::ACCENT } else { colors::MUTED })
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Type a message… (/ for commands)",
-                Style::default().fg(colors::MUTED),
-            ),
+            Span::styled(prompt_icon, icon_style),
+            Span::styled("Type a message… (/ for commands)", styles::muted()),
         ])
     } else {
         Line::from(vec![
-            Span::styled(
-                prompt_icon,
-                Style::default()
-                    .fg(colors::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(buffer, Style::default().fg(colors::TEXT)),
+            Span::styled(prompt_icon, styles::accent_bold()),
+            Span::styled(buffer, styles::text()),
         ])
     };
 
