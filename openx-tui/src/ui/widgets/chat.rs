@@ -41,7 +41,13 @@ pub fn render(
     f.render_widget(block, area);
 
     let height = inner.height as usize;
-    let mut lines: Vec<Line> = Vec::new();
+    let estimated_lines = chat
+        .messages
+        .iter()
+        .map(|m| 1 + m.content.lines().count() + MESSAGE_GAP)
+        .sum::<usize>()
+        .saturating_add(8);
+    let mut lines = Vec::with_capacity(estimated_lines.min(2048));
 
     // ── Build message lines ──────────────────────────────────────
     let mut first_message = true;
@@ -94,8 +100,7 @@ pub fn render(
         if let Some(first) = it.next() {
             let mut spans: Vec<Span> = Vec::new();
             if label.is_empty() {
-                // System messages — icon + content inline.
-                spans.push(Span::styled(icon.to_string(), label_style));
+                spans.push(Span::styled(icon, label_style));
             } else {
                 spans.push(Span::styled(
                     format!("{}{}", icon, label),
@@ -118,7 +123,7 @@ pub fn render(
         // Continuation lines with consistent indent.
         let indent = if label.is_empty() { "  " } else { "        " };
         for line in it {
-            let mut spans = vec![Span::styled(indent.to_string(), content_style)];
+            let mut spans = vec![Span::styled(indent, content_style)];
             for s in line {
                 spans.push(s);
             }

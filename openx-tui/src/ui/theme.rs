@@ -44,6 +44,8 @@ pub mod colors {
     pub const BACKDROP: Color = Color::Rgb(0x06, 0x06, 0x06);
     /// Heading — lavender/purple.
     pub const HEADING: Color = Color::Rgb(0xbd, 0x93, 0xf9);
+    /// OpenX brand — orange.
+    pub const OPENX_ORANGE: Color = Color::Rgb(0xff, 0x95, 0x00);
     /// User role color — warm gold.
     pub const USER_ROLE: Color = Color::Rgb(0xff, 0xb8, 0x6c);
     /// System message color — soft pink.
@@ -54,10 +56,89 @@ pub mod colors {
     pub const TIMESTAMP: Color = Color::Rgb(0x44, 0x47, 0x5a);
 }
 
+/// Reusable styles to avoid repeated `Style::default().fg(...)` in render paths.
+pub mod styles {
+    use super::colors;
+    use ratatui::style::{Modifier, Style};
+
+    #[inline(always)]
+    pub fn border() -> Style {
+        Style::default().fg(colors::BORDER)
+    }
+
+    #[inline(always)]
+    pub fn muted() -> Style {
+        Style::default().fg(colors::MUTED)
+    }
+
+    #[inline(always)]
+    pub fn text() -> Style {
+        Style::default().fg(colors::TEXT)
+    }
+
+    #[inline(always)]
+    pub fn text_dim() -> Style {
+        Style::default().fg(colors::TEXT_DIM)
+    }
+
+    #[inline(always)]
+    pub fn elevated_bg() -> Style {
+        Style::default().bg(colors::ELEVATED)
+    }
+
+    #[inline(always)]
+    pub fn accent_bold() -> Style {
+        Style::default().fg(colors::ACCENT).add_modifier(Modifier::BOLD)
+    }
+
+    #[inline(always)]
+    pub fn openx_orange_bold() -> Style {
+        Style::default().fg(colors::OPENX_ORANGE).add_modifier(Modifier::BOLD)
+    }
+
+    #[inline(always)]
+    pub fn openx_role() -> Style {
+        Style::default().fg(colors::OPENX_ROLE)
+    }
+
+    #[inline(always)]
+    pub fn green() -> Style {
+        Style::default().fg(colors::GREEN)
+    }
+
+    #[inline(always)]
+    pub fn green_bold() -> Style {
+        Style::default().fg(colors::GREEN).add_modifier(Modifier::BOLD)
+    }
+
+    #[inline(always)]
+    pub fn error() -> Style {
+        Style::default().fg(colors::ERROR)
+    }
+
+    #[inline(always)]
+    pub fn accent() -> Style {
+        Style::default().fg(colors::ACCENT)
+    }
+
+    /// Status bar pill (key) — muted bg, dark fg.
+    #[inline(always)]
+    pub fn pill_key() -> Style {
+        Style::default().fg(colors::BG).bg(colors::MUTED)
+    }
+}
+
+pub const HEADER_HEIGHT: u16 = 5;
 pub const STATUS_HEIGHT: u16 = 1;
 pub const INPUT_HEIGHT: u16 = 3;
+/// Minimum number of lines for the chat area (layout constraint).
+pub const MIN_CHAT_LINES: u16 = 4;
 /// Blank lines between messages.
 pub const MESSAGE_GAP: usize = 1;
 /// Inner horizontal margin (chars each side).
 pub const MARGIN_X: u16 = 1;
+/// Max height of command palette overlay (lines).
+pub const PALETTE_MAX_HEIGHT: u16 = 16;
+/// Vertical margin when placing palette overlay inside chat (lines from bottom).
+pub const PALETTE_MARGIN_BOTTOM: u16 = 2;
 pub const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
