@@ -3,7 +3,7 @@
   <p align="center">
     <strong>An intelligent MCP (Model Context Protocol) server that automates GitHub workflows, CI/CD pipelines, code analysis, and pull request self-healing — built with Python, Rust, LangChain, and RAG.</strong>
   </p>
----
+
 
 ## Project Overview
 
