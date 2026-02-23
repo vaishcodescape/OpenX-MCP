@@ -23,8 +23,7 @@
 
 ## Technical Architecture
 
-```
-```
+![OpenX-MCP System Architecture](openx-mcp-architecture.png)
 
 ---
 
