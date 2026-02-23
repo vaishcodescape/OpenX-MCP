@@ -12,10 +12,12 @@ pub const TICK_RATE: Duration = Duration::from_millis(80);
 /// `input_has_focus` — the user is composing input (buffer non-empty or
 ///   explicitly focused). When true, bare-letter shortcuts are routed as
 ///   character input instead of commands.
+/// `input_empty` — the input buffer is empty. When true, Up/Down scroll chat; when false, they cycle history.
 pub fn key_to_action(
     event: &KeyEvent,
     palette_visible: bool,
     input_has_focus: bool,
+    input_empty: bool,
 ) -> Option<Action> {
     // Accept Press and Repeat (hold key); ignore Release so we don't double-handle.
     if event.kind == KeyEventKind::Release {
@@ -50,6 +52,8 @@ pub fn key_to_action(
     if code == KeyCode::Up && mods.is_empty() {
         return if palette_visible {
             Some(Action::PaletteUp)
+        } else if input_empty {
+            Some(Action::ChatScrollPageUp)
         } else {
             Some(Action::HistoryUp)
         };
@@ -57,6 +61,8 @@ pub fn key_to_action(
     if code == KeyCode::Down && mods.is_empty() {
         return if palette_visible {
             Some(Action::PaletteDown)
+        } else if input_empty {
+            Some(Action::ChatScrollPageDown)
         } else {
             Some(Action::HistoryDown)
         };

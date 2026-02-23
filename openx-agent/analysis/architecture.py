@@ -11,6 +11,7 @@ def summarize_architecture(root: str) -> dict:
     for entry in os.listdir(root):
         if entry.startswith("."):
             continue
+        
         full = os.path.join(root, entry)
         if os.path.isdir(full):
             top_level_dirs.append(entry)

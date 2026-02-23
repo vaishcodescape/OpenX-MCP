@@ -6,6 +6,15 @@ use serde::Deserialize;
 pub struct RunResponse {
     pub should_continue: bool,
     pub output: Option<serde_json::Value>,
+    /// Set when the server handled a command but reported an error.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatResponse {
+    pub response: Option<String>,
+    pub conversation_id: Option<String>,
+    pub error: Option<String>,
 }
 
 /// Tool entry from GET /tools (name, description for command palette).
@@ -60,5 +69,25 @@ impl BackendClient {
     pub fn health_check(&self) -> bool {
         let url = format!("{}/health", self.base_url.trim_end_matches('/'));
         self.client.get(&url).send().map(|r| r.status().is_success()).unwrap_or(false)
+    }
+
+    /// Send a message to the LangChain agent via POST /chat.
+    pub fn chat(&self, message: &str, conversation_id: &str) -> Result<ChatResponse, String> {
+        let url = format!("{}/chat", self.base_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "message": message,
+            "conversation_id": conversation_id,
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}: {}", resp.status(), resp.text().unwrap_or_default()));
+        }
+        let chat: ChatResponse = resp.json().map_err(|e| e.to_string())?;
+        Ok(chat)
     }
 }

@@ -4,7 +4,7 @@ use ratatui::Frame;
 
 use crate::app::App;
 use crate::ui::layout;
-use crate::ui::theme::SPINNER;
+use crate::ui::theme::{OPENX_LOADING_FRAMES, SPINNER};
 use crate::ui::widgets::{render_chat, render_header, render_input, render_palette, render_status};
 
 pub fn render(f: &mut Frame, app: &App, tick: usize) {
@@ -12,6 +12,7 @@ pub fn render(f: &mut Frame, app: &App, tick: usize) {
     let regions = layout::compute(area);
 
     let spinner_char = SPINNER[tick % SPINNER.len()];
+    let openx_loading_frame = OPENX_LOADING_FRAMES[tick % OPENX_LOADING_FRAMES.len()];
 
     render_header(f, regions.header);
     render_chat(
@@ -20,6 +21,7 @@ pub fn render(f: &mut Frame, app: &App, tick: usize) {
         regions.chat,
         app.state.loading,
         spinner_char,
+        openx_loading_frame,
     );
     render_input(
         f,

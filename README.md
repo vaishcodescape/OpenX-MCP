@@ -22,7 +22,7 @@ Set env vars:
 - `GITHUB_BASE_URL` (optional for GitHub Enterprise)
 - `HUGGINGFACE_API_KEY` (optional for AI analysis)
 - `HUGGINGFACE_BASE_URL` (optional, defaults to `https://router.huggingface.co/v1`)
-- `HUGGINGFACE_MODEL` (optional, defaults to `Qwen/Qwen2.5-Coder-32B-Instruct`)
+- `HUGGINGFACE_MODEL` (optional, defaults to `Qwen/Qwen2.5-Coder-32B-Instruct` — best HF coding model; use `Qwen/Qwen2.5-7B-Instruct` if unavailable)
 
 **Run openx-agent (MCP server):**
 

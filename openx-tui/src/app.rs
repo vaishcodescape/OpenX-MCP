@@ -65,6 +65,10 @@ impl App {
             CommandEntry { name: "/generatefixpatch".into(), description: "Generate a fix patch".into() },
             CommandEntry { name: "/applyfixtopr".into(), description: "Apply a fix to a pull request".into() },
             CommandEntry { name: "/rerunci".into(), description: "Re-run CI for a workflow".into() },
+            CommandEntry { name: "/chat".into(), description: "Chat with the AI agent (agentic reasoning)".into() },
+            CommandEntry { name: "/ask".into(), description: "Alias for /chat".into() },
+            CommandEntry { name: "/index".into(), description: "Index a repo into the RAG knowledge base".into() },
+            CommandEntry { name: "/reset".into(), description: "Clear agent conversation memory".into() },
         ];
         self.state.palette.commands = builtins;
 
@@ -212,6 +216,24 @@ impl App {
         self.state.loading = true;
         self.state.chat.streaming_content.clear();
 
+        // Route 'chat' commands to the /chat endpoint for agentic AI.
+        if command.starts_with("chat ") {
+            let message = command.strip_prefix("chat ").unwrap_or("").trim();
+            let result = self.client.chat(message, "tui-default");
+            self.state.loading = false;
+            match result {
+                Ok(r) => {
+                    let text = r.error
+                        .unwrap_or_else(|| r.response.unwrap_or_else(|| "(no response)".to_string()));
+                    self.state.chat.messages.push(Message::openx(text));
+                }
+                Err(e) => {
+                    self.state.chat.messages.push(Message::openx(format!("Error: {}", e)));
+                }
+            }
+            return;
+        }
+
         let result = self.client.run(&command);
         self.state.loading = false;
 
@@ -221,7 +243,11 @@ impl App {
                     self.should_quit = true;
                     return;
                 }
-                let text = format_output(r.output);
+                let text = r
+                    .error
+                    .as_deref()
+                    .map(String::from)
+                    .unwrap_or_else(|| format_output(r.output));
                 self.state.chat.messages.push(Message::openx(text));
             }
             Err(e) => {

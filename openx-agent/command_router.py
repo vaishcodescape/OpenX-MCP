@@ -28,6 +28,7 @@ ALIASES: dict[str, str] = {
     "patch": "generate_fix_patch",
     "applyfix": "apply_fix_to_pr",
     "rerun": "rerun_ci",
+    "ask": "chat",
     "q": "quit",
 }
 
@@ -53,6 +54,9 @@ COMMANDS: list[str] = [
     "apply_fix_to_pr",
     "rerun_ci",
     "analyze_repo",
+    "chat",
+    "index",
+    "reset",
     "quit",
     "exit",
 ]
@@ -100,10 +104,15 @@ Session:
 Aliases:
   h/? -> help, ls -> tools, repos -> list_repos, prs -> list_prs, pr -> get_pr
   cpr -> comment_pr, mpr -> merge_pr, wfs -> list_workflows, twf -> trigger_workflow
-  runs -> list_workflow_runs, run -> get_workflow_run, analyze -> analyze_repo
+  runs -> list_workflow_runs, run -> get_workflow_run, analyze -> analyze_repo, ask -> chat
   failing -> get_failing_prs, cilogs -> get_ci_logs, analyzeci -> analyze_ci_failure
   locate -> locate_code_context, patch -> generate_fix_patch, applyfix -> apply_fix_to_pr
   rerun -> rerun_ci, q -> quit
+
+Agentic AI (LangChain):
+  chat <message>: Ask the AI agent (autonomous multi-step reasoning).
+  index <repo_full_name>: Index a repo into the RAG knowledge base.
+  reset: Clear the current agent conversation memory.
 """
 
 
@@ -330,5 +339,23 @@ def run_command(tokens: list[str]) -> CommandResult:
                 {"repo": tokens[1], "workflow_run_id": int(tokens[2])},
             ),
         )
+
+    # --- LangChain Agent commands ---
+
+    if cmd == "chat":
+        _require(tokens, 2, "chat <message>")
+        message = " ".join(tokens[1:])
+        from .langchain_agent import chat as agent_chat
+        return CommandResult(should_continue=True, output=agent_chat(message))
+
+    if cmd == "index":
+        _require(tokens, 2, "index <repo_full_name>")
+        from .rag import index_repo
+        return CommandResult(should_continue=True, output=index_repo(tokens[1]))
+
+    if cmd == "reset":
+        from .langchain_agent import reset_conversation
+        reset_conversation()
+        return CommandResult(should_continue=True, output="Conversation memory cleared.")
 
     raise ValueError(f"Unknown command: {cmd}. Type 'help' for available commands.")
