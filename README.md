@@ -198,10 +198,6 @@ OpenX-MCP/
 ├── pyproject.toml
 └── requirements.txt
 ```
-
----
-
- 
  
 ---
 
