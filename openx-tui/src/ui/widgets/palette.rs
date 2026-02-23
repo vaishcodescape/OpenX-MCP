@@ -45,37 +45,30 @@ pub fn render(f: &mut Frame, palette: &PaletteState, area: ratatui::prelude::Rec
     for (i, &idx) in palette.filtered.iter().take(max_items).enumerate() {
         let cmd = &palette.commands[idx];
         let selected = i == palette.selected_index;
+        let (indicator_style, name_style, desc_style) = if selected {
+            (
+                Style::default().fg(colors::SYSTEM).add_modifier(Modifier::BOLD),
+                Style::default().fg(colors::SYSTEM).add_modifier(Modifier::BOLD),
+                Style::default().fg(colors::SYSTEM),
+            )
+        } else {
+            (
+                Style::default().fg(colors::MUTED),
+                Style::default().fg(colors::TEXT_DIM),
+                Style::default().fg(colors::MUTED),
+            )
+        };
         let indicator = if selected { " ▸ " } else { "   " };
-
-        let name_len = cmd.name.len();
-        let desc_len = cmd.description.len();
-        let content_len = 3 + name_len + 2 + desc_len;
+        let content_len = 3 + cmd.name.len() + 2 + cmd.description.len();
         let pad = width.saturating_sub(content_len);
 
-        if selected {
-            // Selected row: pink text, no background highlight.
-            lines.push(Line::from(vec![
-                Span::styled(indicator, Style::default().fg(colors::SYSTEM).add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    cmd.name.clone(),
-                    Style::default().fg(colors::SYSTEM).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  ", Style::default()),
-                Span::styled(
-                    cmd.description.clone(),
-                    Style::default().fg(colors::SYSTEM),
-                ),
-                Span::styled(" ".repeat(pad), Style::default()),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(indicator, Style::default().fg(colors::MUTED)),
-                Span::styled(cmd.name.clone(), Style::default().fg(colors::TEXT_DIM)),
-                Span::styled("  ", Style::default()),
-                Span::styled(cmd.description.clone(), Style::default().fg(colors::MUTED)),
-                Span::styled(" ".repeat(pad), Style::default()),
-            ]));
-        }
+        lines.push(Line::from(vec![
+            Span::styled(indicator, indicator_style),
+            Span::styled(&cmd.name, name_style),
+            Span::styled("  ", Style::default()),
+            Span::styled(&cmd.description, desc_style),
+            Span::styled(" ".repeat(pad), Style::default()),
+        ]));
     }
 
     // Footer count.

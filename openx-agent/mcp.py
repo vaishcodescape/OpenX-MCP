@@ -8,7 +8,8 @@ from .analysis.ai_analysis import analyze_with_ai
 from .analysis.architecture import summarize_architecture
 from .analysis.format_report import format_analysis_report
 from .analysis.static_analysis import analyze_static
-from .config import settings as config_settings
+from .config import config_settings, resolve_repo
+from .gh_cli import run_gh_command
 from .workspace import (
     git_add,
     git_commit,
@@ -26,6 +27,7 @@ from .github_client import (
     comment_issue,
     comment_pr,
     create_issue,
+    create_pull,
     generate_fix_patch as gh_generate_fix_patch,
     get_ci_logs as gh_get_ci_logs,
     get_failing_prs as gh_get_failing_prs,
@@ -35,6 +37,7 @@ from .github_client import (
     get_repo,
     heal_failing_pr as gh_heal_failing_pr,
     get_workflow_run,
+    list_issues,
     list_open_prs,
     list_repos,
     list_workflow_runs,
@@ -94,30 +97,81 @@ def _list_repos(params: dict[str, Any]) -> Any:
 
 @_tool(
     name="github.list_prs",
-    description="List open pull requests in a repository",
+    description="List open pull requests in a repository. Use repo_full_name or leave empty to use OPENX_ACTIVE_REPO.",
     input_schema={
         "type": "object",
-        "properties": {"repo_full_name": {"type": "string"}},
-        "required": ["repo_full_name"],
+        "properties": {"repo_full_name": {"type": "string", "description": "owner/repo; omit for active repo"}},
     },
 )
 
 def _list_prs(params: dict[str, Any]) -> Any:
-    return list_open_prs(params["repo_full_name"])
+    repo = resolve_repo(params.get("repo_full_name") or "")
+    return list_open_prs(repo)
 
 
 @_tool(
     name="github.get_pr",
-    description="Get a pull request by number",
+    description="Get a pull request by number (details, files changed, diff, CI checks).",
     input_schema={
         "type": "object",
         "properties": {"repo_full_name": {"type": "string"}, "number": {"type": "integer"}},
-        "required": ["repo_full_name", "number"],
+        "required": ["number"],
     },
 )
 
 def _get_pr(params: dict[str, Any]) -> Any:
-    return get_pr(params["repo_full_name"], params["number"])
+    repo = resolve_repo(params.get("repo_full_name") or "")
+    return get_pr(repo, params["number"])
+
+
+@_tool(
+    name="github.create_pr",
+    description="Create a pull request. head = source branch (the branch with your changes), base = target branch (e.g. main).",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "repo_full_name": {"type": "string", "description": "owner/repo"},
+            "title": {"type": "string"},
+            "head": {"type": "string", "description": "Source branch name"},
+            "base": {"type": "string", "description": "Target branch (default main)"},
+            "body": {"type": "string", "description": "PR description"},
+        },
+        "required": ["repo_full_name", "title", "head"],
+    },
+)
+def _create_pr(params: dict[str, Any]) -> Any:
+    return create_pull(
+        params["repo_full_name"],
+        params["title"],
+        params["head"],
+        params.get("base", "main"),
+        params.get("body", ""),
+    )
+
+
+@_tool(
+    name="github.run_gh_command",
+    description="Run a GitHub CLI (gh) command in the terminal. Use when the user asks to run gh, list PRs/issues via terminal, or run a specific gh subcommand. Example: 'pr list --repo owner/repo', 'issue list --repo owner/repo', 'run list --repo owner/repo'. Allowed subcommands: pr, issue, repo, run, workflow, api.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "The gh command without the 'gh' prefix, e.g. 'pr list --repo owner/repo' or 'issue list --state open'",
+            },
+        },
+        "required": ["command"],
+    },
+)
+def _run_gh_command(params: dict[str, Any]) -> Any:
+    cmd = (params.get("command") or "").strip()
+    if not cmd:
+        return {"status": "error", "message": "command is required"}
+    try:
+        output = run_gh_command(cmd)
+        return {"status": "ok", "output": output}
+    except (ValueError, TimeoutError, RuntimeError) as e:
+        return {"status": "error", "message": str(e)}
 
 
 @_tool(

@@ -15,6 +15,28 @@ use crate::ui::theme::{colors, MESSAGE_GAP};
 /// Use pure white for chat body so it's visible in any terminal.
 const CHAT_TEXT: Color = Color::White;
 
+/// Push MESSAGE_GAP blank lines (if buffer non-empty) then one "◆ OpenX " + content line.
+fn push_openx_indicator_line(
+    lines: &mut Vec<Line<'static>>,
+    content: &str,
+    content_style: Style,
+) {
+    if !lines.is_empty() {
+        for _ in 0..MESSAGE_GAP {
+            lines.push(Line::from(Span::raw("")));
+        }
+    }
+    lines.push(Line::from(vec![
+        Span::styled(
+            "◆ OpenX ",
+            Style::default()
+                .fg(colors::OPENX_ROLE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(content.to_string(), content_style),
+    ]));
+}
+
 /// Format a SystemTime as "HH:MM".
 fn format_time(t: &SystemTime) -> String {
     let secs = t
@@ -128,38 +150,9 @@ pub fn render(
 
     // ── Streaming / loading indicator (OpenX loading animation) ───
     if loading && chat.streaming_content.is_empty() {
-        if !lines.is_empty() {
-            for _ in 0..MESSAGE_GAP {
-                lines.push(Line::from(Span::raw("")));
-            }
-        }
-        lines.push(Line::from(vec![
-            Span::styled(
-                "◆ OpenX ",
-                Style::default()
-                    .fg(colors::OPENX_ROLE)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(openx_loading_frame, Style::default().fg(colors::TEXT_DIM)),
-        ]));
+        push_openx_indicator_line(&mut lines, openx_loading_frame, Style::default().fg(colors::TEXT_DIM));
     } else if !chat.streaming_content.is_empty() {
-        if !lines.is_empty() {
-            for _ in 0..MESSAGE_GAP {
-                lines.push(Line::from(Span::raw("")));
-            }
-        }
-        lines.push(Line::from(vec![
-            Span::styled(
-                "◆ OpenX ",
-                Style::default()
-                    .fg(colors::OPENX_ROLE)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                chat.streaming_content.clone(),
-                Style::default().fg(CHAT_TEXT),
-            ),
-        ]));
+        push_openx_indicator_line(&mut lines, &chat.streaming_content, Style::default().fg(CHAT_TEXT));
     }
 
     // Empty state — minimal prompt.

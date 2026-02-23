@@ -50,6 +50,22 @@ impl App {
         self.state.input_focused || !self.state.input_buffer.is_empty()
     }
 
+    /// Sync palette query from input buffer (everything after leading '/').
+    fn sync_palette_query(&mut self) {
+        self.state.palette.query = self.state.input_buffer.get(1..).unwrap_or("").to_string();
+        update_palette_filter(&mut self.state.palette);
+    }
+
+    /// Estimated total line count for chat (for scroll-to-bottom). Uses content line count as proxy for display lines.
+    fn estimated_chat_total_lines(include_gap_per_message: bool) -> impl Fn(&[Message]) -> usize {
+        move |messages: &[Message]| {
+            messages
+                .iter()
+                .map(|m| m.content.lines().count().max(1) + if include_gap_per_message { 1 } else { 0 })
+                .sum()
+        }
+    }
+
     pub fn bootstrap(&mut self) {
         self.connected = self.client.health_check();
         self.state.chat.messages.push(Message::system(
@@ -119,13 +135,7 @@ impl App {
                 }
             }
             // Auto-scroll to bottom on new message.
-            let total_lines: usize = self
-                .state
-                .chat
-                .messages
-                .iter()
-                .map(|m| m.content.lines().count().max(1) + 1)
-                .sum();
+            let total_lines = Self::estimated_chat_total_lines(true)(&self.state.chat.messages);
             self.state.chat.scroll = total_lines.saturating_sub(10);
         }
     }
@@ -144,8 +154,7 @@ impl App {
                 self.state.input_buffer.insert(pos, c);
                 self.state.input_cursor = pos + c.len_utf8();
                 if self.state.palette.visible {
-                    self.state.palette.query = self.state.input_buffer.get(1..).unwrap_or("").to_string();
-                    update_palette_filter(&mut self.state.palette);
+                    self.sync_palette_query();
                 }
             }
             Action::Backspace => {
@@ -153,8 +162,7 @@ impl App {
                     if self.state.input_cursor > 1 {
                         self.state.input_buffer.remove(self.state.input_cursor - 1);
                         self.state.input_cursor -= 1;
-                        self.state.palette.query = self.state.input_buffer.get(1..).unwrap_or("").to_string();
-                        update_palette_filter(&mut self.state.palette);
+                        self.sync_palette_query();
                     }
                 } else if self.state.input_cursor > 0 && self.state.input_cursor <= self.state.input_buffer.len() {
                     self.state.input_buffer.remove(self.state.input_cursor - 1);
@@ -182,13 +190,7 @@ impl App {
             }
             Action::ChatScrollTop => self.state.chat.scroll = 0,
             Action::ChatScrollBottom => {
-                let total = self
-                    .state
-                    .chat
-                    .messages
-                    .iter()
-                    .map(|m| m.content.lines().count().max(1))
-                    .sum::<usize>();
+                let total = Self::estimated_chat_total_lines(false)(&self.state.chat.messages);
                 self.state.chat.scroll = total.saturating_sub(20);
             }
 

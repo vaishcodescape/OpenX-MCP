@@ -105,10 +105,11 @@ def _ai_generated_markers(lines: list[str], path: str) -> list[Issue]:
     return issues
 
 
-def _duplicate_blocks(root: str, min_lines: int = 6) -> list[Issue]:
+def _duplicate_blocks_from_cache(path_to_lines: dict[str, list[str]], min_lines: int = 6) -> list[Issue]:
+    """Detect duplicate code blocks using pre-read path->lines (avoids re-reading files)."""
     blocks: dict[str, list[tuple[str, int]]] = defaultdict(list)
-    for path in _iter_code_files(root):
-        lines = [ln.strip() for ln in _read_lines(path) if ln.strip()]
+    for path, raw_lines in path_to_lines.items():
+        lines = [ln.strip() for ln in raw_lines if ln.strip()]
         if len(lines) < min_lines:
             continue
         for i in range(0, len(lines) - min_lines + 1):
@@ -125,15 +126,18 @@ def _duplicate_blocks(root: str, min_lines: int = 6) -> list[Issue]:
 
 
 def analyze_static(root: str) -> dict[str, list[dict]]:
-    issues: list[Issue] = []
+    """Single pass: read each file once, run markers and duplicate detection on cached lines."""
+    path_to_lines: dict[str, list[str]] = {}
     for path in _iter_code_files(root):
-        lines = _read_lines(path)
+        path_to_lines[path] = _read_lines(path)
+
+    issues: list[Issue] = []
+    for path, lines in path_to_lines.items():
         issues.extend(_find_markers(lines, BAD_PRACTICES, "bad_practice", path))
         issues.extend(_find_markers(lines, PERF_HINTS, "performance", path))
         issues.extend(_find_markers(lines, BUG_HINTS, "bug", path))
         issues.extend(_ai_generated_markers(lines, path))
-
-    issues.extend(_duplicate_blocks(root))
+    issues.extend(_duplicate_blocks_from_cache(path_to_lines))
 
     grouped: dict[str, list[dict]] = defaultdict(list)
     for issue in issues:
