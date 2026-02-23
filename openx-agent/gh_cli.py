@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -13,10 +14,12 @@ from .config import settings
 
 T = TypeVar("T")
 
+logger = logging.getLogger(__name__)
+
 # Timeout for a single gh command (seconds).
 _GH_TIMEOUT = 15
 # Max workers for parallel gh calls.
-_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="gh_cli")
+_EXECUTOR = ThreadPoolExecutor(max_workers=10, thread_name_prefix="gh_cli")
 
 
 def _gh_env() -> dict[str, str]:
@@ -43,9 +46,11 @@ def _run_gh(*args: str, timeout: int = _GH_TIMEOUT) -> str | None:
             env=_gh_env(),
         )
         if r.returncode != 0:
+            logger.debug("gh %s failed (rc=%d): %s", " ".join(args), r.returncode, (r.stderr or "").strip())
             return None
         return (r.stdout or "").strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.debug("gh %s exception: %s", " ".join(args), exc)
         return None
 
 
@@ -256,9 +261,11 @@ def _run_gh_capture_both(*args: str, timeout: int = _GH_TIMEOUT) -> str | None:
             env=_gh_env(),
         )
         if r.returncode != 0:
+            logger.debug("gh %s failed (rc=%d): %s", " ".join(args), r.returncode, (r.stderr or "").strip())
             return None
         return ((r.stdout or "") + " " + (r.stderr or "")).strip() or None
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.debug("gh %s exception: %s", " ".join(args), exc)
         return None
 
 
@@ -345,10 +352,11 @@ def run_gh_command(command: str, timeout: int = 25) -> str:
         raise RuntimeError(f"gh command failed: {e}")
 
 
-def run_in_background(func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+def run_in_background(func: Callable[..., T], *args: Any, timeout: int | None = None, **kwargs: Any) -> T:
     """Run a callable in the thread pool; wait for result. Use for non-blocking execution vs main thread."""
+    effective_timeout = timeout if timeout is not None else _GH_TIMEOUT + 5
     future = _EXECUTOR.submit(func, *args, **kwargs)
     try:
-        return future.result(timeout=_GH_TIMEOUT + 5)
+        return future.result(timeout=effective_timeout)
     except FuturesTimeoutError:
-        raise TimeoutError("gh operation timed out")
+        raise TimeoutError(f"gh operation timed out after {effective_timeout}s")

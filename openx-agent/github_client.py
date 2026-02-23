@@ -4,6 +4,7 @@ import base64
 import difflib
 import io
 import json
+import logging
 import re
 import threading
 import zipfile
@@ -16,10 +17,17 @@ from .config import settings
 from . import cache as _cache
 from . import gh_cli
 
+logger = logging.getLogger(__name__)
+
 # CI check conclusions that indicate failure (single source of truth)
 _CHECK_CONCLUSION_FAILED = frozenset({
     "failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale",
 })
+
+
+def _bg(func, *args, timeout=30, **kwargs):
+    """Run a function in the background thread pool to avoid blocking the main thread."""
+    return gh_cli.run_in_background(func, *args, timeout=timeout, **kwargs)
 
 
 def _load_github() -> Any:
@@ -271,17 +279,21 @@ def get_pr(repo_full_name: str, number: int) -> dict[str, Any]:
 
 
 def comment_pr(repo_full_name: str, number: int, body: str) -> dict[str, Any]:
-    repo = get_repo(repo_full_name)
-    pr = repo.get_pull(number)
-    comment = pr.create_issue_comment(body)
-    return {"id": comment.id, "html_url": comment.html_url}
+    def _do():
+        repo = get_repo(repo_full_name)
+        pr = repo.get_pull(number)
+        comment = pr.create_issue_comment(body)
+        return {"id": comment.id, "html_url": comment.html_url}
+    return _bg(_do)
 
 
 def merge_pr(repo_full_name: str, number: int, method: str = "merge") -> dict[str, Any]:
-    repo = get_repo(repo_full_name)
-    pr = repo.get_pull(number)
-    result = pr.merge(merge_method=method)
-    return {"merged": result.merged, "message": result.message}
+    def _do():
+        repo = get_repo(repo_full_name)
+        pr = repo.get_pull(number)
+        result = pr.merge(merge_method=method)
+        return {"merged": result.merged, "message": result.message}
+    return _bg(_do)
 
 
 def create_pull(
@@ -295,30 +307,42 @@ def create_pull(
     repo_full_name = (repo_full_name or "").strip()
     if not repo_full_name or "/" not in repo_full_name:
         return {"status": "error", "message": "repo_full_name must be owner/repo (e.g. owner/repo)"}
-    try:
-        repo = get_repo(repo_full_name)
-        pr = repo.create_pull(title=title, body=body or None, head=head, base=base)
-        web_base = _web_base_url()
-        html_url = f"{web_base}/{repo_full_name}/pull/{pr.number}"
+    # Try gh CLI first (fast, non-blocking subprocess).
+    if gh_cli.available():
         try:
-            created = repo.get_pull(pr.number)
-            return {
-                "repo_full_name": repo_full_name,
-                "number": created.number,
-                "title": created.title,
-                "state": created.state,
-                "html_url": html_url,
-            }
+            result = gh_cli.run_in_background(
+                gh_cli.create_pr, repo_full_name, title, head, base, body, timeout=25,
+            )
+            if result is not None:
+                return result
         except Exception:
-            return {
-                "repo_full_name": repo_full_name,
-                "number": pr.number,
-                "title": pr.title,
-                "state": pr.state,
-                "html_url": html_url,
-            }
-    except Exception as e:
-        return {"status": "error", "message": _github_error_message(e, for_issues=False)}
+            pass  # Fall through to PyGithub.
+    def _do():
+        try:
+            repo = get_repo(repo_full_name)
+            pr = repo.create_pull(title=title, body=body or None, head=head, base=base)
+            web_base = _web_base_url()
+            html_url = f"{web_base}/{repo_full_name}/pull/{pr.number}"
+            try:
+                created = repo.get_pull(pr.number)
+                return {
+                    "repo_full_name": repo_full_name,
+                    "number": created.number,
+                    "title": created.title,
+                    "state": created.state,
+                    "html_url": html_url,
+                }
+            except Exception:
+                return {
+                    "repo_full_name": repo_full_name,
+                    "number": pr.number,
+                    "title": pr.title,
+                    "state": pr.state,
+                    "html_url": html_url,
+                }
+        except Exception as e:
+            return {"status": "error", "message": _github_error_message(e, for_issues=False)}
+    return _bg(_do)
 
 
 # ---------------------------------------------------------------------------
@@ -428,47 +452,62 @@ def create_issue(
     repo_full_name = (repo_full_name or "").strip()
     if not repo_full_name or "/" not in repo_full_name:
         return {"status": "error", "message": "repo_full_name must be owner/repo (e.g. owner/repo)"}
-    try:
-        repo = get_repo(repo_full_name)
-        issue = repo.create_issue(title=title, body=body or None, labels=labels or [])
-        # Verify it exists on GitHub by refetching; build URL from our API host to avoid 404.
-        web_base = _web_base_url()
-        html_url = f"{web_base}/{repo_full_name}/issues/{issue.number}"
+    # Try gh CLI first (fast, non-blocking subprocess).
+    if gh_cli.available():
         try:
-            created = repo.get_issue(issue.number)
-            return {
-                "repo_full_name": repo_full_name,
-                "number": created.number,
-                "title": created.title,
-                "state": created.state,
-                "html_url": html_url,
-            }
+            result = gh_cli.run_in_background(
+                gh_cli.create_issue, repo_full_name, title, body, labels, timeout=20,
+            )
+            if result is not None:
+                return result
         except Exception:
-            return {
-                "repo_full_name": repo_full_name,
-                "number": issue.number,
-                "title": issue.title,
-                "state": issue.state,
-                "html_url": html_url,
-            }
-    except Exception as e:
-        return {"status": "error", "message": _github_error_message(e, for_issues=True)}
+            pass  # Fall through to PyGithub.
+    def _do():
+        try:
+            repo = get_repo(repo_full_name)
+            issue = repo.create_issue(title=title, body=body or None, labels=labels or [])
+            web_base = _web_base_url()
+            html_url = f"{web_base}/{repo_full_name}/issues/{issue.number}"
+            try:
+                created = repo.get_issue(issue.number)
+                return {
+                    "repo_full_name": repo_full_name,
+                    "number": created.number,
+                    "title": created.title,
+                    "state": created.state,
+                    "html_url": html_url,
+                }
+            except Exception:
+                return {
+                    "repo_full_name": repo_full_name,
+                    "number": issue.number,
+                    "title": issue.title,
+                    "state": issue.state,
+                    "html_url": html_url,
+                }
+        except Exception as e:
+            return {"status": "error", "message": _github_error_message(e, for_issues=True)}
+    return _bg(_do)
 
 
 def comment_issue(repo_full_name: str, number: int, body: str) -> dict[str, Any]:
     """Add a comment to an issue (or PR; issues and PRs share the same comment API)."""
-    repo = get_repo(repo_full_name)
-    issue = repo.get_issue(number)
-    comment = issue.create_comment(body)
-    return {"id": comment.id, "html_url": comment.html_url}
+    def _do():
+        repo = get_repo(repo_full_name)
+        issue = repo.get_issue(number)
+        comment = issue.create_comment(body)
+        return {"id": comment.id, "html_url": comment.html_url}
+    return _bg(_do)
 
 
 def close_issue(repo_full_name: str, number: int) -> dict[str, Any]:
     """Close an issue."""
-    repo = get_repo(repo_full_name)
-    issue = repo.get_issue(number)
-    issue.edit(state="closed")
-    return {"number": issue.number, "state": "closed"}
+    def _do():
+        repo = get_repo(repo_full_name)
+        issue = repo.get_issue(number)
+        issue.edit(state="closed")
+        return {"number": issue.number, "state": "closed"}
+    return _bg(_do)
 
 
 def list_workflows(repo_full_name: str) -> list[dict[str, Any]]:
