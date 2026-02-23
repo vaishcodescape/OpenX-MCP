@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 
 from .config import settings
+
+# Dedicated thread pool for workspace git operations (avoid blocking main thread).
+_WS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="workspace")
 
 
 def _workspace_root() -> Path:
@@ -60,19 +64,26 @@ def list_dir(repo_path: str, subdir: str = "") -> list[dict[str, Any]]:
 
 
 def _git(repo_path: str, *args: str, capture: bool = True) -> str:
-    root = _resolve(repo_path) if repo_path else _workspace_root()
-    if not (root / ".git").exists():
-        raise RuntimeError(f"Not a git repository: {root}")
-    cmd = ["git", "-C", str(root)] + list(args)
-    r = subprocess.run(
-        cmd,
-        capture_output=capture,
-        text=True,
-        timeout=60,
-    )
-    if r.returncode != 0 and capture:
-        raise RuntimeError(f"git {' '.join(args)}: {r.stderr or r.stdout or 'failed'}")
-    return (r.stdout or "").strip() if capture else ""
+    def _run() -> str:
+        root = _resolve(repo_path) if repo_path else _workspace_root()
+        if not (root / ".git").exists():
+            raise RuntimeError(f"Not a git repository: {root}")
+        cmd = ["git", "-C", str(root)] + list(args)
+        r = subprocess.run(
+            cmd,
+            capture_output=capture,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode != 0 and capture:
+            raise RuntimeError(f"git {' '.join(args)}: {r.stderr or r.stdout or 'failed'}")
+        return (r.stdout or "").strip() if capture else ""
+
+    future = _WS_EXECUTOR.submit(_run)
+    try:
+        return future.result(timeout=65)
+    except FuturesTimeoutError:
+        raise TimeoutError(f"git {' '.join(args)} timed out")
 
 
 def git_status(repo_path: str = "") -> str:

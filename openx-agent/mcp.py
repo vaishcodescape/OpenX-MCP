@@ -9,7 +9,7 @@ from .analysis.architecture import summarize_architecture
 from .analysis.format_report import format_analysis_report
 from .analysis.static_analysis import analyze_static
 from .config import config_settings, resolve_repo
-from .gh_cli import run_gh_command
+from .gh_cli import run_gh_command, run_in_background
 from .workspace import (
     git_add,
     git_commit,
@@ -168,7 +168,7 @@ def _run_gh_command(params: dict[str, Any]) -> Any:
     if not cmd:
         return {"status": "error", "message": "command is required"}
     try:
-        output = run_gh_command(cmd)
+        output = run_in_background(run_gh_command, cmd, timeout=30)
         return {"status": "ok", "output": output}
     except (ValueError, TimeoutError, RuntimeError) as e:
         return {"status": "error", "message": str(e)}

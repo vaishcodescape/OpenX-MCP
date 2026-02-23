@@ -11,6 +11,7 @@ ALIASES: dict[str, str] = {
     "h": "help",
     "?": "help",
     "ls": "tools",
+    "gh": "run_gh",
     "repos": "list_repos",
     "prs": "list_prs",
     "pr": "get_pr",
@@ -40,6 +41,7 @@ COMMANDS: list[str] = [
     "tools",
     "schema",
     "call",
+    "run_gh",
     "list_repos",
     "list_prs",
     "get_pr",
@@ -92,6 +94,7 @@ Shortcuts:
   get_pr <repo_full_name> <number>: Show details for one pull request.
   comment_pr <repo_full_name> <number> <body>: Add a PR comment.
   merge_pr <repo_full_name> <number> [merge|squash|rebase]: Merge a PR.
+  gh <command>: Run a GitHub CLI command in the terminal (e.g. gh pr list --repo owner/repo).
   get_readme <repo_full_name> [ref]: Get README content. update_readme: use agent or call github.update_readme.
   list_issues <repo_full_name> [open|closed|all]: List issues in a repo.
   get_issue <repo_full_name> <number>: Show details for one issue.
@@ -122,9 +125,9 @@ Aliases:
   cpr -> comment_pr, mpr -> merge_pr, issues -> list_issues, issue -> get_issue
   wfs -> list_workflows, twf -> trigger_workflow
   runs -> list_workflow_runs, run -> get_workflow_run, analyze -> analyze_repo, ask -> chat
-  heal -> heal_ci, failing -> get_failing_prs, cilogs -> get_ci_logs, analyzeci -> analyze_ci_failure
+   heal -> heal_ci, failing -> get_failing_prs, cilogs -> get_ci_logs, analyzeci -> analyze_ci_failure
   locate -> locate_code_context, patch -> generate_fix_patch, applyfix -> apply_fix_to_pr
-  rerun -> rerun_ci, q -> quit
+  rerun -> rerun_ci, gh -> run_gh, q -> quit
 
 Agentic AI (LangChain):
   chat <message>: Ask the AI agent (autonomous multi-step reasoning).
@@ -173,6 +176,14 @@ def run_command(tokens: list[str]) -> CommandResult:
         raw = " ".join(tokens[2:])
         args = json.loads(raw)
         return CommandResult(should_continue=True, output=call_tool(name, args))
+
+    if cmd == "run_gh":
+        _require(tokens, 2, "gh <command> (e.g. gh pr list --repo owner/repo)")
+        command = " ".join(tokens[1:])
+        return CommandResult(
+            should_continue=True,
+            output=call_tool("github.run_gh_command", {"command": command}),
+        )
 
     if cmd == "list_repos":
         org = tokens[1] if len(tokens) > 1 else None
