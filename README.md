@@ -1,4 +1,4 @@
-# OpenX MCP Server
+# OpenX  
 
 FastAPI-based MCP server for GitHub operations (PRs, repos, CI/CD) plus code analysis and architecture insights.
 
@@ -20,9 +20,9 @@ pip install -e .
 Set env vars:
 - `GITHUB_TOKEN` (required for GitHub tools)
 - `GITHUB_BASE_URL` (optional for GitHub Enterprise)
-- `HUGGINGFACE_API_KEY` (optional for AI analysis)
-- `HUGGINGFACE_BASE_URL` (optional, defaults to `https://router.huggingface.co/v1`)
-- `HUGGINGFACE_MODEL` (optional, defaults to `Qwen/Qwen2.5-Coder-32B-Instruct` — best HF coding model; use `Qwen/Qwen2.5-7B-Instruct` if unavailable)
+- `LLM_API_KEY` (optional for AI analysis)
+- `LLM_BASE_URL` (optional, defaults to `https://api.llm-model.com/v1`)
+- `LLM_MODEL` (optional, defaults to `Open-Source Model`)
 
 **Run openx-agent (MCP server):**
 
