@@ -143,12 +143,5 @@ pub const PALETTE_MAX_HEIGHT: u16 = 16;
 pub const PALETTE_MARGIN_BOTTOM: u16 = 2;
 pub const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/// OpenX loading animation frames (cycled when LLM is responding).
-pub const OPENX_LOADING_FRAMES: &[&str] = &[
-    "◆ OpenX   ",
-    "◆ OpenX.  ",
-    "◆ OpenX.. ",
-    "◆ OpenX...",
-    "◆ OpenX ..",
-    "◆ OpenX  .",
-];
+/// Codex-style loading animation (blinking block cursor).
+pub const OPENX_LOADING_FRAMES: &[&str] = &["█", "█", "█", " ", " ", " "];

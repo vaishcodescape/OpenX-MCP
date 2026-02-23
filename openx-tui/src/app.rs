@@ -1,15 +1,23 @@
 //! Global state container and action dispatch (minimal assistant).
 
+use std::sync::{mpsc, Arc};
+use std::thread;
+
 use crate::actions::Action;
 use crate::backend::{BackendClient, ToolInfo};
 use crate::commands::update_palette_filter;
 use crate::git;
-use crate::services::{format_output, normalize_slash_command};
+use crate::services::normalize_slash_command;
 use crate::state::{CommandEntry, Message};
+
+/// Result of a background HTTP call (agent response).
+pub enum BackendResult {
+    Chat { text: String },
+}
 
 pub struct App {
     pub state: crate::state::AppState,
-    client: BackendClient,
+    client: Arc<BackendClient>,
     pub should_quit: bool,
     /// For spinner animation (incremented each tick).
     pub tick: usize,
@@ -17,17 +25,23 @@ pub struct App {
     pub git_branch: String,
     /// Whether backend is reachable.
     pub connected: bool,
+    /// Channel for receiving background HTTP results.
+    result_rx: mpsc::Receiver<BackendResult>,
+    result_tx: mpsc::Sender<BackendResult>,
 }
 
 impl App {
     pub fn new(client: BackendClient) -> Self {
+        let (tx, rx) = mpsc::channel();
         Self {
             state: crate::state::AppState::default(),
-            client,
+            client: Arc::new(client),
             should_quit: false,
             tick: 0,
             git_branch: git::git_branch(),
             connected: false,
+            result_rx: rx,
+            result_tx: tx,
         }
     }
 
@@ -39,7 +53,7 @@ impl App {
     pub fn bootstrap(&mut self) {
         self.connected = self.client.health_check();
         self.state.chat.messages.push(Message::system(
-            "Welcome to OpenX. Type a message or use / for command palette.".to_string(),
+            "Welcome to OpenX. Type what you need or use / for shortcuts.".to_string(),
         ));
 
         // Built-in commands (always available, even without backend).
@@ -48,25 +62,31 @@ impl App {
             CommandEntry { name: "/tools".into(), description: "List all available MCP tools".into() },
             CommandEntry { name: "/schema".into(), description: "Show tool schema / parameters".into() },
             CommandEntry { name: "/call".into(), description: "Call a tool directly".into() },
-            CommandEntry { name: "/analyzerepo".into(), description: "Analyze a repository".into() },
-            CommandEntry { name: "/listrepos".into(), description: "List repositories".into() },
-            CommandEntry { name: "/listprs".into(), description: "List pull requests".into() },
-            CommandEntry { name: "/getpr".into(), description: "Get pull request details".into() },
-            CommandEntry { name: "/commentpr".into(), description: "Comment on a pull request".into() },
-            CommandEntry { name: "/mergepr".into(), description: "Merge a pull request".into() },
-            CommandEntry { name: "/listworkflows".into(), description: "List CI/CD workflows".into() },
-            CommandEntry { name: "/triggerworkflow".into(), description: "Trigger a workflow run".into() },
-            CommandEntry { name: "/listworkflowruns".into(), description: "List workflow runs".into() },
-            CommandEntry { name: "/getworkflowrun".into(), description: "Get workflow run details".into() },
-            CommandEntry { name: "/getfailingprs".into(), description: "Get PRs with failing CI".into() },
-            CommandEntry { name: "/getcilogs".into(), description: "Get CI logs for a run".into() },
-            CommandEntry { name: "/analyzecifailure".into(), description: "Analyze a CI failure".into() },
-            CommandEntry { name: "/locatecodecontext".into(), description: "Locate relevant code context".into() },
-            CommandEntry { name: "/generatefixpatch".into(), description: "Generate a fix patch".into() },
-            CommandEntry { name: "/applyfixtopr".into(), description: "Apply a fix to a pull request".into() },
-            CommandEntry { name: "/rerunci".into(), description: "Re-run CI for a workflow".into() },
+            CommandEntry { name: "/analyze".into(), description: "Analyze a repository".into() },
+            CommandEntry { name: "/repos".into(), description: "List repositories".into() },
+            CommandEntry { name: "/prs".into(), description: "List pull requests".into() },
+            CommandEntry { name: "/pr".into(), description: "Get pull request details".into() },
+            CommandEntry { name: "/issues".into(), description: "List issues in a repo".into() },
+            CommandEntry { name: "/issue".into(), description: "Get issue details".into() },
+            CommandEntry { name: "/newissue".into(), description: "Create a new issue".into() },
+            CommandEntry { name: "/commentissue".into(), description: "Comment on an issue".into() },
+            CommandEntry { name: "/closeissue".into(), description: "Close an issue".into() },
+            CommandEntry { name: "/comment".into(), description: "Comment on a pull request".into() },
+            CommandEntry { name: "/merge".into(), description: "Merge a pull request".into() },
+            CommandEntry { name: "/readme".into(), description: "Get or update README (use agent for update)".into() },
+            CommandEntry { name: "/workflows".into(), description: "List CI/CD workflows".into() },
+            CommandEntry { name: "/trigger".into(), description: "Trigger a workflow run".into() },
+            CommandEntry { name: "/runs".into(), description: "List workflow runs".into() },
+            CommandEntry { name: "/run".into(), description: "Get workflow run details".into() },
+            CommandEntry { name: "/failing".into(), description: "Get PRs with failing CI".into() },
+            CommandEntry { name: "/heal".into(), description: "Auto-heal failing PR (analyze, fix code, apply, rerun CI)".into() },
+            CommandEntry { name: "/logs".into(), description: "Get CI logs for a run".into() },
+            CommandEntry { name: "/analyze-failure".into(), description: "Analyze a CI failure".into() },
+            CommandEntry { name: "/context".into(), description: "Locate relevant code context".into() },
+            CommandEntry { name: "/patch".into(), description: "Generate a fix patch".into() },
+            CommandEntry { name: "/apply".into(), description: "Apply a fix to a pull request".into() },
+            CommandEntry { name: "/rerun".into(), description: "Re-run CI for a workflow".into() },
             CommandEntry { name: "/chat".into(), description: "Chat with the AI agent (agentic reasoning)".into() },
-            CommandEntry { name: "/ask".into(), description: "Alias for /chat".into() },
             CommandEntry { name: "/index".into(), description: "Index a repo into the RAG knowledge base".into() },
             CommandEntry { name: "/reset".into(), description: "Clear agent conversation memory".into() },
         ];
@@ -87,6 +107,27 @@ impl App {
             self.state.palette.commands.extend(extra);
         }
         update_palette_filter(&mut self.state.palette);
+    }
+
+    /// Poll for completed background HTTP results. Call each tick.
+    pub fn poll_results(&mut self) {
+        while let Ok(result) = self.result_rx.try_recv() {
+            self.state.loading = false;
+            match result {
+                BackendResult::Chat { text } => {
+                    self.state.chat.messages.push(Message::openx(text));
+                }
+            }
+            // Auto-scroll to bottom on new message.
+            let total_lines: usize = self
+                .state
+                .chat
+                .messages
+                .iter()
+                .map(|m| m.content.lines().count().max(1) + 1)
+                .sum();
+            self.state.chat.scroll = total_lines.saturating_sub(10);
+        }
     }
 
     pub fn dispatch(&mut self, action: Action) {
@@ -201,6 +242,11 @@ impl App {
             return;
         }
 
+        // Don't allow submitting while another request is in-flight.
+        if self.state.loading {
+            return;
+        }
+
         self.state.palette.visible = false;
         self.state.input_buffer.clear();
         self.state.input_cursor = 0;
@@ -216,44 +262,34 @@ impl App {
         self.state.loading = true;
         self.state.chat.streaming_content.clear();
 
-        // Route 'chat' commands to the /chat endpoint for agentic AI.
-        if command.starts_with("chat ") {
-            let message = command.strip_prefix("chat ").unwrap_or("").trim();
-            let result = self.client.chat(message, "tui-default");
+        // Quit/exit: handle locally for instant, Codex-like response.
+        if command == "quit" || command == "exit" {
             self.state.loading = false;
-            match result {
-                Ok(r) => {
-                    let text = r.error
-                        .unwrap_or_else(|| r.response.unwrap_or_else(|| "(no response)".to_string()));
-                    self.state.chat.messages.push(Message::openx(text));
-                }
-                Err(e) => {
-                    self.state.chat.messages.push(Message::openx(format!("Error: {}", e)));
-                }
-            }
+            self.state.chat.messages.push(Message::openx("Goodbye.".to_string()));
+            self.should_quit = true;
             return;
         }
 
-        let result = self.client.run(&command);
-        self.state.loading = false;
+        // All other input (free-form and slash commands) goes to the LLM agent.
+        // The agent interprets intent and uses tools — e.g. /prs → list_prs, natural language → tools.
+        let tx = self.result_tx.clone();
+        let client = Arc::clone(&self.client);
+        let message = command
+            .strip_prefix("chat ")
+            .unwrap_or(&command)
+            .trim()
+            .to_string();
 
-        match result {
-            Ok(r) => {
-                if !r.should_continue {
-                    self.should_quit = true;
-                    return;
-                }
-                let text = r
-                    .error
-                    .as_deref()
-                    .map(String::from)
-                    .unwrap_or_else(|| format_output(r.output));
-                self.state.chat.messages.push(Message::openx(text));
-            }
-            Err(e) => {
-                self.state.chat.messages.push(Message::openx(format!("Error: {}", e)));
-            }
-        }
+        thread::spawn(move || {
+            let result = client.chat(&message, "tui-default");
+            let text = match result {
+                Ok(r) => r.error.unwrap_or_else(|| {
+                    r.response.unwrap_or_else(|| "(no response)".to_string())
+                }),
+                Err(e) => format!("Error: {}", e),
+            };
+            let _ = tx.send(BackendResult::Chat { text });
+        });
     }
 
     fn history_up(&mut self) {

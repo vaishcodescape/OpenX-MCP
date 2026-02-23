@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import shlex
-
 from dotenv import load_dotenv
 
 from fastapi import FastAPI
@@ -9,12 +7,15 @@ from fastapi import FastAPI
 load_dotenv()
 from pydantic import BaseModel
 
-from .command_router import run_command
 from .mcp import MCPRequest, MCPResponse, call_tool, list_tools
 
 
 class RunBody(BaseModel):
     command: str = ""
+
+
+# Conversation ID used for programmatic /run calls (separate from TUI chat).
+RUN_CONVERSATION_ID = "run-default"
 
 app = FastAPI(title="OpenX", version="1.0")
 
@@ -50,17 +51,28 @@ async def mcp(request: MCPRequest) -> MCPResponse:
 
 @app.post("/run")
 async def run_raw(body: RunBody) -> dict:
-    """Run a single command string (same as TUI input). Returns { should_continue, output }."""
-    try:
-        tokens = shlex.split(body.command) if (body.command or "").strip() else []
-        result = run_command(tokens)
-        return {"should_continue": result.should_continue, "output": result.output}
-    except Exception as exc:  # noqa: BLE001
+    """Run a command via the LLM agent (same workflow as /chat). Returns { should_continue, output }."""
+    from .langchain_agent import chat as agent_chat, reset_conversation
+
+    msg = (body.command or "").strip()
+    if not msg:
+        return {"should_continue": True, "output": None}
+
+    msg_lower = msg.lower()
+    if msg_lower in ("quit", "exit"):
+        return {"should_continue": False, "output": "Goodbye."}
+    if msg_lower == "reset":
+        reset_conversation(RUN_CONVERSATION_ID)
         return {
             "should_continue": True,
-            "output": None,
-            "error": str(exc),
+            "output": "Conversation reset. You can continue with a fresh context.",
         }
+
+    try:
+        response = agent_chat(msg, RUN_CONVERSATION_ID)
+        return {"should_continue": True, "output": response, "error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"should_continue": True, "output": None, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -79,14 +91,22 @@ class IndexBody(BaseModel):
 
 @app.post("/chat")
 async def chat_endpoint(body: ChatBody) -> dict:
-    """Send a message to the LangChain ReAct agent."""
-    from .langchain_agent import chat as agent_chat
+    """Send a message to the LangChain ReAct agent. Handles /reset locally."""
+    from .langchain_agent import chat as agent_chat, reset_conversation
+
+    msg = (body.message or "").strip()
+    if msg.lower() == "reset":
+        reset_conversation(body.conversation_id)
+        return {
+            "response": "Conversation reset. You can continue with a fresh context.",
+            "conversation_id": body.conversation_id,
+        }
 
     try:
-        response = agent_chat(body.message, body.conversation_id)
+        response = agent_chat(body.message or "", body.conversation_id)
         return {"response": response, "conversation_id": body.conversation_id}
     except Exception as exc:  # noqa: BLE001
-        return {"response": None, "error": str(exc)}
+        return {"response": None, "conversation_id": body.conversation_id, "error": str(exc)}
 
 
 @app.post("/index")

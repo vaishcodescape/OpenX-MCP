@@ -87,14 +87,8 @@ pub fn render(
         };
 
         let content_style = Style::default().fg(CHAT_TEXT);
-        let content_lines: Vec<Line> = if matches!(msg.role, MessageRole::OpenX) {
-            markdown::to_lines(&msg.content)
-        } else {
-            msg.content
-                .lines()
-                .map(|s| Line::from(Span::styled(s.to_string(), content_style)))
-                .collect()
-        };
+        // Codex-style: format both user and OpenX with markdown (headings, code blocks, lists).
+        let content_lines: Vec<Line> = markdown::to_lines(&msg.content);
 
         // First line: icon + label + timestamp + first content line.
         let mut it = content_lines.into_iter();
@@ -141,12 +135,12 @@ pub fn render(
         }
         lines.push(Line::from(vec![
             Span::styled(
-                openx_loading_frame,
+                "◆ OpenX ",
                 Style::default()
                     .fg(colors::OPENX_ROLE)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Thinking…", Style::default().fg(colors::TEXT_DIM)),
+            Span::styled(openx_loading_frame, Style::default().fg(colors::TEXT_DIM)),
         ]));
     } else if !chat.streaming_content.is_empty() {
         if !lines.is_empty() {
