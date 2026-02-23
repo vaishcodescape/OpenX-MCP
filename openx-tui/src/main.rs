@@ -14,7 +14,7 @@ use std::io;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event},
+    event::{self, DisableMouseCapture, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -37,7 +37,7 @@ fn main() -> Result<()> {
 
     enable_raw_mode().map_err(anyhow::Error::msg)?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).map_err(anyhow::Error::msg)?;
+    execute!(stdout, EnterAlternateScreen, DisableMouseCapture).map_err(anyhow::Error::msg)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(anyhow::Error::msg)?;
 
@@ -66,8 +66,16 @@ fn run_loop(
         terminal.draw(|f| ui::render(f, &*app, tick))?;
 
         if event::poll(TICK_RATE).map_err(anyhow::Error::msg)? {
-            if let Event::Key(key) = event::read().map_err(anyhow::Error::msg)? {
-                let action = key_to_action(&key, app.state.palette.visible, app.input_has_focus());
+            let ev = event::read().map_err(anyhow::Error::msg)?;
+            // Ignore mouse events so scroll wheel doesn't affect the app.
+            if let Event::Key(key) = ev {
+                let input_empty = app.state.input_buffer().is_empty();
+                let action = key_to_action(
+                    &key,
+                    app.state.palette.visible,
+                    app.input_has_focus(),
+                    input_empty,
+                );
                 if let Some(a) = action {
                     app.dispatch(a);
                     if app.should_quit {

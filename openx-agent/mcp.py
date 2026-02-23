@@ -334,10 +334,12 @@ def _analysis_repo(params: dict[str, Any]) -> Any:
     static_findings = analyze_static(root)
     arch = summarize_architecture(root)
     ai = analyze_with_ai({"static_findings": static_findings, "architecture": arch})
+    ai_message = ai.get("message", "") if isinstance(ai, dict) else ""
     return {
         "static_findings": static_findings,
         "architecture": arch,
         "ai": ai,
+        "ai_message": ai_message,
     }
 
 

@@ -33,6 +33,10 @@ const SLASH_MAP: &[(&str, &str)] = &[
     ("/generatefixpatch", "generate_fix_patch"),
     ("/applyfixtopr", "apply_fix_to_pr"),
     ("/rerunci", "rerun_ci"),
+    ("/chat", "chat"),
+    ("/ask", "chat"),
+    ("/index", "index"),
+    ("/reset", "reset"),
 ];
 
 pub fn normalize_slash_command(raw: &str) -> String {

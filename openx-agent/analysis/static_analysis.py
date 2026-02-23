@@ -60,10 +60,19 @@ class Issue:
     line: int
 
 
+# Directories to skip during analysis (virtual envs, build artifacts, etc.).
+SKIP_DIRS = {
+    ".git", ".venv", "venv", "env", ".env",
+    "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
+    "target", "build", "dist", ".tox", ".eggs", "egg-info",
+    ".next", ".nuxt", "vendor", "site-packages",
+}
+
+
 def _iter_code_files(root: str) -> Iterable[str]:
-    for base, _, files in os.walk(root):
-        if "/.git" in base:
-            continue
+    for base, dirs, files in os.walk(root):
+        # Prune skipped directories in-place so os.walk won't descend.
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.endswith(".egg-info")]
         for name in files:
             ext = os.path.splitext(name)[1].lower()
             if ext in CODE_EXTENSIONS:

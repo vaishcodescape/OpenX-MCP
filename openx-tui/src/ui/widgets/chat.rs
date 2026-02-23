@@ -32,7 +32,8 @@ pub fn render(
     chat: &ChatState,
     area: ratatui::prelude::Rect,
     loading: bool,
-    spinner_char: char,
+    _spinner_char: char,
+    openx_loading_frame: &str,
 ) {
     let block = Block::default()
         .borders(Borders::NONE)
@@ -131,7 +132,7 @@ pub fn render(
         }
     }
 
-    // ── Streaming / loading indicator ────────────────────────────
+    // ── Streaming / loading indicator (OpenX loading animation) ───
     if loading && chat.streaming_content.is_empty() {
         if !lines.is_empty() {
             for _ in 0..MESSAGE_GAP {
@@ -140,14 +141,10 @@ pub fn render(
         }
         lines.push(Line::from(vec![
             Span::styled(
-                "◆ OpenX ",
+                openx_loading_frame,
                 Style::default()
                     .fg(colors::OPENX_ROLE)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{} ", spinner_char),
-                Style::default().fg(colors::ACCENT),
             ),
             Span::styled("Thinking…", Style::default().fg(colors::TEXT_DIM)),
         ]));

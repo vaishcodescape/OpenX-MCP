@@ -13,6 +13,9 @@ class Settings:
     huggingface_model: str = os.getenv(
         "HUGGINGFACE_MODEL", "Qwen/Qwen2.5-Coder-32B-Instruct"
     )
+    langsmith_api_key: str | None = os.getenv("LANGCHAIN_API_KEY")
+    langsmith_tracing: bool = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
+    langsmith_project: str = os.getenv("LANGCHAIN_PROJECT", "openx-agent")
 
 
 settings = Settings()
