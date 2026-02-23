@@ -1,13 +1,185 @@
-//! Markdown to ratatui Line/Spans: headings, code blocks, inline code, bold, lists, horizontal rules.
+//! Markdown to ratatui Line/Spans: headings, syntax-highlighted code blocks,
+//! inline code, bold, lists, horizontal rules. Codex-style formatting.
 
-use pulldown_cmark::{CodeBlockKind, Event, Tag, Options, Parser};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{FontStyle, ThemeSet};
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
+use std::sync::OnceLock;
 
 use super::theme::colors;
 
 /// Body text in markdown — white for maximum visibility.
 const MD_TEXT: Color = Color::White;
+
+/// SyntaxSet and ThemeSet loaded once for syntax highlighting.
+fn syntax_set() -> &'static SyntaxSet {
+    static PS: OnceLock<SyntaxSet> = OnceLock::new();
+    PS.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn theme_set() -> &'static ThemeSet {
+    static TS: OnceLock<ThemeSet> = OnceLock::new();
+    TS.get_or_init(ThemeSet::load_defaults)
+}
+
+/// Convert syntect highlighting Style to ratatui Style (for syntax-highlighted spans).
+fn syntect_style_to_ratatui(
+    s: &syntect::highlighting::Style,
+    code_bg: Color,
+) -> ratatui::style::Style {
+    let fg = if s.foreground.a > 0 {
+        Some(Color::Rgb(s.foreground.r, s.foreground.g, s.foreground.b))
+    } else {
+        None
+    };
+    let bg = if s.background.a > 0 {
+        Color::Rgb(s.background.r, s.background.g, s.background.b)
+    } else {
+        code_bg
+    };
+    let mut modifier = Modifier::empty();
+    if s.font_style.contains(FontStyle::BOLD) {
+        modifier.insert(Modifier::BOLD);
+    }
+    if s.font_style.contains(FontStyle::ITALIC) {
+        modifier.insert(Modifier::ITALIC);
+    }
+    if s.font_style.contains(FontStyle::UNDERLINE) {
+        modifier.insert(Modifier::UNDERLINED);
+    }
+    Style::default()
+        .fg(fg.unwrap_or(MD_TEXT))
+        .bg(bg)
+        .add_modifier(modifier)
+}
+
+/// Map markdown code block language to syntect extension.
+fn lang_to_ext(lang: &str) -> &'static str {
+    match lang.trim().to_lowercase().as_str() {
+        "python" | "py" => "py",
+        "rust" | "rs" => "rs",
+        "javascript" | "js" => "js",
+        "typescript" | "ts" => "ts",
+        "tsx" => "tsx",
+        "jsx" => "jsx",
+        "go" => "go",
+        "java" => "java",
+        "ruby" | "rb" => "rb",
+        "csharp" | "cs" | "c#" => "cs",
+        "cpp" | "c++" => "cpp",
+        "c" => "c",
+        "h" => "h",
+        "hpp" => "hpp",
+        "sql" => "sql",
+        "bash" | "sh" | "shell" => "sh",
+        "yaml" | "yml" => "yml",
+        "json" => "json",
+        "toml" => "toml",
+        "html" => "html",
+        "css" => "css",
+        "markdown" | "md" => "md",
+        _ => "txt",
+    }
+}
+
+/// Render a single code block with optional syntax highlighting. Pushes Codex-style
+/// box (top/bottom border, left gutter) and highlighted lines.
+fn push_code_block(lines: &mut Vec<Line<'static>>, code_lines: &[String], lang: Option<&str>) {
+    let gutter = Span::styled(
+        " ┃ ",
+        Style::default()
+            .fg(colors::BORDER)
+            .bg(colors::CODE_BG),
+    );
+    let blank_line = Line::from(Span::raw(""));
+
+    // Top border — Codex-style
+    lines.push(Line::from(vec![
+        Span::styled(
+            " ┌─",
+            Style::default()
+                .fg(colors::BORDER)
+                .bg(colors::CODE_BG),
+        ),
+        Span::styled(
+            " ".repeat(2),
+            Style::default().bg(colors::CODE_BG),
+        ),
+    ]));
+
+    let (syntax, theme) = if let Some(l) = lang {
+        let ext = lang_to_ext(l);
+        let ps = syntax_set();
+        let ts = theme_set();
+        let syn = ps
+            .find_syntax_by_extension(ext)
+            .or_else(|| Some(ps.find_syntax_plain_text()));
+        let th = ["base16-ocean.dark", "InspiredGitHub", "Solarized (dark)"]
+            .into_iter()
+            .find_map(|name| ts.themes.get(name))
+            .or_else(|| ts.themes.values().next());
+        match (syn, th) {
+            (Some(s), Some(t)) => (Some(s), Some(t)),
+            _ => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
+    if let (Some(syntax), Some(theme)) = (syntax, theme) {
+        let mut highlighter = HighlightLines::new(syntax, theme);
+        let ps = syntax_set();
+        for code_line in code_lines {
+            let with_newline = format!("{}\n", code_line);
+            for line in LinesWithEndings::from(&with_newline) {
+                let mut spans = vec![gutter.clone()];
+                match highlighter.highlight_line(line, ps) {
+                    Ok(ranges) => {
+                        for (style, s) in ranges {
+                            let rt_style =
+                                syntect_style_to_ratatui(&style, colors::CODE_BG);
+                            spans.push(Span::styled(s.to_string(), rt_style));
+                        }
+                    }
+                    _ => {
+                        spans.push(Span::styled(
+                            code_line.clone(),
+                            Style::default()
+                                .fg(MD_TEXT)
+                                .bg(colors::CODE_BG),
+                        ));
+                    }
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+    } else {
+        for line in code_lines {
+            lines.push(Line::from(vec![
+                gutter.clone(),
+                Span::styled(
+                    line.clone(),
+                    Style::default()
+                        .fg(MD_TEXT)
+                        .bg(colors::CODE_BG),
+                ),
+            ]));
+        }
+    }
+
+    // Bottom border
+    lines.push(Line::from(Span::styled(
+        " └".to_string(),
+        Style::default()
+            .fg(colors::BORDER)
+            .bg(colors::CODE_BG),
+    )));
+    lines.push(blank_line);
+}
 
 /// Convert markdown string to a list of Lines (owned, no lifetime).
 pub fn to_lines(md: &str) -> Vec<Line<'static>> {
@@ -15,6 +187,7 @@ pub fn to_lines(md: &str) -> Vec<Line<'static>> {
     let mut current: Vec<Span<'static>> = Vec::new();
     let mut in_code_block = false;
     let mut code_block_lines: Vec<String> = Vec::new();
+    let mut code_block_lang: Option<String> = None;
     let mut bold = false;
     let mut in_heading = false;
     let mut list_depth: usize = 0;
@@ -23,43 +196,43 @@ pub fn to_lines(md: &str) -> Vec<Line<'static>> {
 
     for event in Parser::new_ext(md, opts) {
         match event {
-            // ── Code blocks ──────────────────────────────────────
-            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))) => {
+            // ── Code blocks (with optional language for syntax highlighting) ──
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) => {
                 flush_spans(&mut current, &mut lines);
                 in_code_block = true;
                 code_block_lines.clear();
+                code_block_lang = Some(lang.to_string());
             }
             Event::End(Tag::CodeBlock(_)) => {
                 if in_code_block {
-                    for line in &code_block_lines {
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                " ┃ ".to_string(),
-                                Style::default().fg(colors::BORDER).bg(colors::CODE_BG),
-                            ),
-                            Span::styled(
-                                line.clone(),
-                                Style::default().fg(MD_TEXT).bg(colors::CODE_BG),
-                            ),
-                        ]));
-                    }
-                    lines.push(Line::from(Span::raw("")));
+                    push_code_block(
+                        &mut lines,
+                        &code_block_lines,
+                        code_block_lang.as_deref(),
+                    );
                     in_code_block = false;
+                    code_block_lang = None;
                 }
             }
 
             // ── Headings ─────────────────────────────────────────
-            Event::Start(Tag::Heading(..)) => {
+            Event::Start(Tag::Heading(level, _, _)) => {
                 flush_spans(&mut current, &mut lines);
                 in_heading = true;
+                let prefix = match level {
+                    pulldown_cmark::HeadingLevel::H1 => "# ",
+                    pulldown_cmark::HeadingLevel::H2 => "## ",
+                    pulldown_cmark::HeadingLevel::H3 => "### ",
+                    _ => "#### ",
+                };
                 current.push(Span::styled(
-                    "# ".to_string(),
+                    prefix.to_string(),
                     Style::default()
                         .fg(colors::HEADING)
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            Event::End(Tag::Heading(..)) => {
+            Event::End(Tag::Heading(_, _, _)) => {
                 in_heading = false;
                 flush_spans(&mut current, &mut lines);
             }
@@ -121,7 +294,9 @@ pub fn to_lines(md: &str) -> Vec<Line<'static>> {
                 let s = t.to_string();
                 current.push(Span::styled(
                     format!(" {} ", s),
-                    Style::default().fg(colors::ACCENT).bg(colors::CODE_BG),
+                    Style::default()
+                        .fg(colors::ACCENT)
+                        .bg(colors::CODE_BG),
                 ));
             }
 

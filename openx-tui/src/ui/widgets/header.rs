@@ -31,29 +31,34 @@ pub fn render(f: &mut Frame, area: ratatui::prelude::Rect) {
         .and_then(|p| p.into_os_string().into_string().ok())
         .unwrap_or_else(|| "—".to_string());
 
-    let w = area.width.saturating_sub(3) as usize;
-    let inner = w.saturating_sub(4);
+    // Total width available, minus 2 for leading "  " indent.
+    let total = (area.width as usize).saturating_sub(2);
+    // Number of horizontal dashes between the corners (╭ and ╮ take 1 each).
+    let dash_count = total.saturating_sub(2);
+    // Inner content width = between the "│ " and " │" (1 border + 1 space each side = 4).
+    let inner = total.saturating_sub(4);
 
-    let top_line = format!("{}{}", "─".repeat(w), "╮");
-    let bottom_line = format!("╰{}{}", "─".repeat(w.saturating_sub(1)), "╯");
-    let empty_line = format!("  │{}│", " ".repeat(inner));
+    let top_line = format!("╭{}╮", "─".repeat(dash_count));
+    let bottom_line = format!("╰{}╯", "─".repeat(dash_count));
 
-    let title_content = format!("⚡ OpenX (v{VERSION})");
-    let title_len = title_content.chars().count();
     let help_len = HELP_HINT.chars().count();
-    let pad = inner.saturating_sub(title_len + 1 + help_len + EMOJI_WIDTH_SLOP);
+    // ⚡ is a wide char in most terminals, so add 1 for the slop.
+    let title_text_len = "⚡ OpenX ".chars().count() + format!("(v{VERSION})").chars().count() + EMOJI_WIDTH_SLOP;
+    let pad = inner.saturating_sub(title_text_len + help_len);
 
     let dir_max = inner.saturating_sub(DIR_LABEL.chars().count());
     let dir_show = truncate_end(&dir, dir_max);
-    let line3_content_len = DIR_LABEL.chars().count() + dir_show.chars().count();
-    let line3_pad = inner.saturating_sub(line3_content_len);
+    let dir_content_len = DIR_LABEL.chars().count() + dir_show.chars().count();
+    let dir_pad = inner.saturating_sub(dir_content_len);
 
     let border = styles::border();
     let lines = vec![
+        // ╭─────────────────────────────────╮
         Line::from(vec![
             Span::styled("  ", border),
             Span::styled(top_line, border),
         ]),
+        // │ ⚡ OpenX (v0.1.0)        /help │
         Line::from(vec![
             Span::styled("  │ ", border),
             Span::styled("⚡ ", styles::accent_bold()),
@@ -63,14 +68,21 @@ pub fn render(f: &mut Frame, area: ratatui::prelude::Rect) {
             Span::styled(HELP_HINT, styles::muted()),
             Span::styled("│", border),
         ]),
-        Line::from(vec![Span::styled(empty_line, border)]),
+        // │                                 │
+        Line::from(vec![
+            Span::styled("  │", border),
+            Span::styled(" ".repeat(dash_count.saturating_sub(1)), ratatui::style::Style::default()),
+            Span::styled("│", border),
+        ]),
+        // │ directory: /path/to/project     │
         Line::from(vec![
             Span::styled("  │ ", border),
             Span::styled(DIR_LABEL, styles::text_dim()),
             Span::styled(dir_show, styles::openx_role()),
-            Span::styled(" ".repeat(line3_pad), ratatui::style::Style::default()),
+            Span::styled(" ".repeat(dir_pad), ratatui::style::Style::default()),
             Span::styled("│", border),
         ]),
+        // ╰─────────────────────────────────╯
         Line::from(vec![
             Span::styled("  ", border),
             Span::styled(bottom_line, border),

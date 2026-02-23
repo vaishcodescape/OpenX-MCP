@@ -14,6 +14,8 @@ ALIASES: dict[str, str] = {
     "repos": "list_repos",
     "prs": "list_prs",
     "pr": "get_pr",
+    "issues": "list_issues",
+    "issue": "get_issue",
     "cpr": "comment_pr",
     "mpr": "merge_pr",
     "wfs": "list_workflows",
@@ -21,6 +23,7 @@ ALIASES: dict[str, str] = {
     "runs": "list_workflow_runs",
     "run": "get_workflow_run",
     "analyze": "analyze_repo",
+    "heal": "heal_ci",
     "failing": "get_failing_prs",
     "cilogs": "get_ci_logs",
     "analyzeci": "analyze_ci_failure",
@@ -42,10 +45,16 @@ COMMANDS: list[str] = [
     "get_pr",
     "comment_pr",
     "merge_pr",
+    "list_issues",
+    "get_issue",
+    "create_issue",
+    "comment_issue",
+    "close_issue",
     "list_workflows",
     "trigger_workflow",
     "list_workflow_runs",
     "get_workflow_run",
+    "heal_ci",
     "get_failing_prs",
     "get_ci_logs",
     "analyze_ci_failure",
@@ -83,13 +92,20 @@ Shortcuts:
   get_pr <repo_full_name> <number>: Show details for one pull request.
   comment_pr <repo_full_name> <number> <body>: Add a PR comment.
   merge_pr <repo_full_name> <number> [merge|squash|rebase]: Merge a PR.
+  get_readme <repo_full_name> [ref]: Get README content. update_readme: use agent or call github.update_readme.
+  list_issues <repo_full_name> [open|closed|all]: List issues in a repo.
+  get_issue <repo_full_name> <number>: Show details for one issue.
+  create_issue <repo_full_name> <title> [body]: Create a new issue.
+  comment_issue <repo_full_name> <number> <body>: Add a comment to an issue.
+  close_issue <repo_full_name> <number>: Close an issue.
   list_workflows <repo_full_name>: List GitHub Actions workflows.
   trigger_workflow <repo_full_name> <workflow_id> <ref> [json_inputs]: Dispatch a workflow.
   list_workflow_runs <repo_full_name> <workflow_id>: List runs for one workflow.
   get_workflow_run <repo_full_name> <run_id>: Show one workflow run.
-  analyze_repo <path>: Run repository analysis (static + architecture + AI).
+  analyze_repo [path]: Run repository analysis (path optional; defaults to workspace root).
 
 Self-healing (Autonomous PR):
+  heal_ci <repo> [pr_number]: Auto-heal a failing PR (get logs, analyze, generate fix, apply to PR, rerun CI). Omit pr_number to heal first failing PR.
   get_failing_prs <repo>: List PRs with failed CI.
   get_ci_logs <repo> <workflow_run_id>: Fetch raw CI logs.
   analyze_ci_failure: Use 'call github.analyze_ci_failure' with logs.
@@ -103,9 +119,10 @@ Session:
 
 Aliases:
   h/? -> help, ls -> tools, repos -> list_repos, prs -> list_prs, pr -> get_pr
-  cpr -> comment_pr, mpr -> merge_pr, wfs -> list_workflows, twf -> trigger_workflow
+  cpr -> comment_pr, mpr -> merge_pr, issues -> list_issues, issue -> get_issue
+  wfs -> list_workflows, twf -> trigger_workflow
   runs -> list_workflow_runs, run -> get_workflow_run, analyze -> analyze_repo, ask -> chat
-  failing -> get_failing_prs, cilogs -> get_ci_logs, analyzeci -> analyze_ci_failure
+  heal -> heal_ci, failing -> get_failing_prs, cilogs -> get_ci_logs, analyzeci -> analyze_ci_failure
   locate -> locate_code_context, patch -> generate_fix_patch, applyfix -> apply_fix_to_pr
   rerun -> rerun_ci, q -> quit
 
@@ -113,6 +130,10 @@ Agentic AI (LangChain):
   chat <message>: Ask the AI agent (autonomous multi-step reasoning).
   index <repo_full_name>: Index a repo into the RAG knowledge base.
   reset: Clear the current agent conversation memory.
+
+Local workspace (modify, commit, push): Ask the agent to e.g. "fix the lint in src/foo.py and commit and push".
+  Uses workspace_read_file, workspace_write_file, workspace_git_status, workspace_git_add, workspace_git_commit, workspace_git_push.
+  Set OPENX_WORKSPACE_ROOT to the repo path (default: current directory).
 """
 
 
@@ -164,7 +185,7 @@ def run_command(tokens: list[str]) -> CommandResult:
         _require(tokens, 2, "list_prs <repo_full_name>")
         return CommandResult(
             should_continue=True,
-            output=call_tool("github.list_open_prs", {"repo_full_name": tokens[1]}),
+            output=call_tool("github.list_prs", {"repo_full_name": tokens[1]}),
         )
 
     if cmd == "get_pr":
@@ -203,6 +224,65 @@ def run_command(tokens: list[str]) -> CommandResult:
                     "number": int(tokens[2]),
                     "method": method,
                 },
+            ),
+        )
+
+    if cmd == "list_issues":
+        _require(tokens, 2, "list_issues <repo_full_name> [open|closed|all]")
+        state = tokens[2] if len(tokens) > 2 else "open"
+        return CommandResult(
+            should_continue=True,
+            output=call_tool(
+                "github.list_issues",
+                {"repo_full_name": tokens[1], "state": state},
+            ),
+        )
+
+    if cmd == "get_issue":
+        _require(tokens, 3, "get_issue <repo_full_name> <number>")
+        return CommandResult(
+            should_continue=True,
+            output=call_tool(
+                "github.get_issue",
+                {"repo_full_name": tokens[1], "number": int(tokens[2])},
+            ),
+        )
+
+    if cmd == "create_issue":
+        _require(tokens, 3, "create_issue <repo_full_name> <title> [body]")
+        return CommandResult(
+            should_continue=True,
+            output=call_tool(
+                "github.create_issue",
+                {
+                    "repo_full_name": tokens[1],
+                    "title": tokens[2],
+                    "body": " ".join(tokens[3:]) if len(tokens) > 3 else "",
+                },
+            ),
+        )
+
+    if cmd == "comment_issue":
+        _require(tokens, 4, "comment_issue <repo_full_name> <number> <body>")
+        return CommandResult(
+            should_continue=True,
+            output=call_tool(
+                "github.comment_issue",
+                {
+                    "repo_full_name": tokens[1],
+                    "number": int(tokens[2]),
+                    "body": " ".join(tokens[3:]),
+                },
+            ),
+        )
+
+    if cmd == "close_issue":
+        _require(tokens, 3, "close_issue <repo_full_name> <number>")
+        return CommandResult(
+            should_continue=True,
+            output=call_tool(
+                "github.close_issue",
+                {"repo_full_name": tokens[1], "number": int(tokens[2])},
             ),
         )
 
@@ -256,9 +336,20 @@ def run_command(tokens: list[str]) -> CommandResult:
         )
 
     if cmd == "analyze_repo":
-        _require(tokens, 2, "analyze_repo <path>")
+        path = tokens[1] if len(tokens) > 1 else ""
         return CommandResult(
-            should_continue=True, output=call_tool("analysis.repo", {"path": tokens[1]})
+            should_continue=True,
+            output=call_tool("analysis.analyze_repo", {"path": path} if path else {}),
+        )
+
+    if cmd == "heal_ci":
+        _require(tokens, 2, "heal_ci <repo> [pr_number]")
+        payload: dict[str, Any] = {"repo": tokens[1]}
+        if len(tokens) > 2:
+            payload["pr_number"] = int(tokens[2])
+        return CommandResult(
+            should_continue=True,
+            output=call_tool("github.heal_failing_pr", payload),
         )
 
     if cmd == "get_failing_prs":

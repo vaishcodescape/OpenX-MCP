@@ -3,6 +3,7 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct RunResponse {
     pub should_continue: bool,
     pub output: Option<serde_json::Value>,
@@ -11,6 +12,7 @@ pub struct RunResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ChatResponse {
     pub response: Option<String>,
     pub conversation_id: Option<String>,
@@ -38,7 +40,8 @@ impl BackendClient {
         Self { base_url, client }
     }
 
-    /// Run a command string (same as TUI input). Returns (should_continue, output).
+    /// Run a command string via POST /run (e.g. for other clients). TUI uses /chat only.
+    #[allow(dead_code)]
     pub fn run(&self, command: &str) -> Result<RunResponse, String> {
         let url = format!("{}/run", self.base_url.trim_end_matches('/'));
         let body = serde_json::json!({ "command": command });

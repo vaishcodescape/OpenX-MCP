@@ -62,6 +62,11 @@ fn run_loop(
 ) -> Result<()> {
     loop {
         app.tick = app.tick.wrapping_add(1);
+        // Pick up any completed background HTTP results.
+        app.poll_results();
+        if app.should_quit {
+            return Ok(());
+        }
         let tick = app.tick;
         terminal.draw(|f| ui::render(f, &*app, tick))?;
 

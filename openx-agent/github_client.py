@@ -128,6 +128,114 @@ def merge_pr(repo_full_name: str, number: int, method: str = "merge") -> dict[st
     return {"merged": result.merged, "message": result.message}
 
 
+# ---------------------------------------------------------------------------
+# README (get / update)
+# ---------------------------------------------------------------------------
+
+def get_readme(repo_full_name: str, ref: str | None = None) -> dict[str, Any]:
+    """Get README content. ref = branch/tag/SHA or None for default branch."""
+    repo = get_repo(repo_full_name)
+    readme = repo.get_readme(ref=ref) if ref else repo.get_readme()
+    content = base64.b64decode(readme.content).decode("utf-8", errors="replace")
+    return {
+        "path": readme.path,
+        "content": content,
+        "sha": readme.sha,
+        "html_url": readme.html_url,
+    }
+
+
+def update_readme(repo_full_name: str, content: str, branch: str | None = None, message: str = "docs: update README") -> dict[str, Any]:
+    """Create or update README in the repo. branch = target branch or default."""
+    repo = get_repo(repo_full_name)
+    ref = branch or repo.default_branch
+    try:
+        readme = repo.get_readme(ref=ref)
+        path = readme.path
+        sha = readme.sha
+        repo.update_file(path, message, content, sha, branch=ref)
+        return {"status": "updated", "path": path, "branch": ref}
+    except Exception as e:
+        err_str = str(e).lower()
+        if "404" in err_str or "not found" in err_str:
+            repo.create_file("README.md", message, content, branch=ref)
+            return {"status": "created", "path": "README.md", "branch": ref}
+        raise
+
+
+# ---------------------------------------------------------------------------
+# GitHub Issues
+# ---------------------------------------------------------------------------
+
+
+def list_issues(
+    repo_full_name: str,
+    state: str = "open",
+) -> list[dict[str, Any]]:
+    """List issues in a repository. state: open, closed, or all."""
+    repo = get_repo(repo_full_name)
+    issues = repo.get_issues(state=state)
+    return [
+        {
+            "number": i.number,
+            "title": i.title,
+            "state": i.state,
+            "user": i.user.login if i.user else None,
+            "html_url": i.html_url,
+            "labels": [lb.name for lb in (i.labels or [])],
+        }
+        for i in issues
+    ]
+
+
+def get_issue(repo_full_name: str, number: int) -> dict[str, Any]:
+    """Get a single issue by number."""
+    repo = get_repo(repo_full_name)
+    issue = repo.get_issue(number)
+    return {
+        "number": issue.number,
+        "title": issue.title,
+        "body": issue.body,
+        "state": issue.state,
+        "user": issue.user.login if issue.user else None,
+        "html_url": issue.html_url,
+        "labels": [lb.name for lb in (issue.labels or [])],
+    }
+
+
+def create_issue(
+    repo_full_name: str,
+    title: str,
+    body: str = "",
+    labels: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create a new issue in the repository."""
+    repo = get_repo(repo_full_name)
+    issue = repo.create_issue(title=title, body=body or None, labels=labels or [])
+    return {
+        "number": issue.number,
+        "title": issue.title,
+        "state": issue.state,
+        "html_url": issue.html_url,
+    }
+
+
+def comment_issue(repo_full_name: str, number: int, body: str) -> dict[str, Any]:
+    """Add a comment to an issue (or PR; issues and PRs share the same comment API)."""
+    repo = get_repo(repo_full_name)
+    issue = repo.get_issue(number)
+    comment = issue.create_comment(body)
+    return {"id": comment.id, "html_url": comment.html_url}
+
+
+def close_issue(repo_full_name: str, number: int) -> dict[str, Any]:
+    """Close an issue."""
+    repo = get_repo(repo_full_name)
+    issue = repo.get_issue(number)
+    issue.edit(state="closed")
+    return {"number": issue.number, "state": "closed"}
+
+
 def list_workflows(repo_full_name: str) -> list[dict[str, Any]]:
     repo = get_repo(repo_full_name)
     workflows = repo.get_workflows()
@@ -576,3 +684,71 @@ def rerun_ci(repo_full_name: str, workflow_run_id: int) -> dict[str, Any]:
         f"/repos/{repo_full_name}/actions/runs/{workflow_run_id}/rerun",
     )
     return {"status": "rerun_requested", "workflow_run_id": workflow_run_id}
+
+
+def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[str, Any]:
+    """Run full CI healing pipeline: find failing PR → get logs → analyze → locate context → generate patch → apply to PR → rerun CI.
+    If pr_number is None, heals the first failing PR in the repo. Returns structured status and errors."""
+    try:
+        failing = get_failing_prs(repo_full_name)
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to get failing PRs: {e}", "stage": "get_failing_prs"}
+
+    if not failing:
+        return {"status": "no_failing_prs", "message": "No open PRs with failed CI in this repo."}
+
+    pr_entry = next((p for p in failing if p["pr_number"] == pr_number), None) if pr_number else failing[0]
+    if pr_number and not pr_entry:
+        return {"status": "not_failing", "message": f"PR #{pr_number} does not have failed CI or not found."}
+
+    assert pr_entry is not None
+    pr_num = pr_entry["pr_number"]
+    failed_checks = pr_entry.get("failed_checks", [])
+    run_id = None
+    for check in failed_checks:
+        run_id = check.get("workflow_run_id")
+        if run_id:
+            break
+    if not run_id:
+        return {
+            "status": "no_logs",
+            "pr_number": pr_num,
+            "message": "No workflow run ID available for failed checks; cannot fetch logs.",
+        }
+
+    try:
+        logs = get_ci_logs(repo_full_name, run_id)
+    except Exception as e:
+        return {"status": "error", "pr_number": pr_num, "message": f"Failed to get CI logs: {e}", "stage": "get_ci_logs"}
+
+    error = analyze_ci_failure(logs)
+    try:
+        code_context = locate_code_context(repo_full_name, error)
+    except Exception as e:
+        return {"status": "error", "pr_number": pr_num, "message": f"Failed to locate code context: {e}", "stage": "locate_code_context"}
+
+    patch = generate_fix_patch(code_context, error)
+    if not patch or not patch.strip():
+        return {
+            "status": "no_fix",
+            "pr_number": pr_num,
+            "error_type": error.get("error_type"),
+            "reason": (error.get("reason") or "")[:300],
+            "message": "No automated fix available for this error type. Consider manual fix or extend generate_fix_patch.",
+        }
+
+    try:
+        result = apply_fix_to_pr(repo_full_name, pr_num, patch)
+    except Exception as e:
+        return {"status": "error", "pr_number": pr_num, "message": f"Failed to apply fix to PR: {e}", "stage": "apply_fix_to_pr"}
+
+    try:
+        rerun_ci(repo_full_name, run_id)
+    except Exception as e:
+        result["rerun_error"] = str(e)
+    result["status"] = "healed"
+    result["pr_number"] = pr_num
+    result["workflow_run_id"] = run_id
+    result["error_type"] = error.get("error_type")
+    result["message"] = f"Applied fix for PR #{pr_num} ({error.get('error_type', 'unknown')}) and requested CI re-run."
+    return result
