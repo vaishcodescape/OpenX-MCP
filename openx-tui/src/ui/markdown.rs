@@ -147,7 +147,7 @@ fn push_code_block(lines: &mut Vec<Line<'static>>, code_lines: &[String], lang: 
                     }
                     _ => {
                         spans.push(Span::styled(
-                            code_line.clone(),
+                            line.trim_end_matches('\n').to_string(),
                             Style::default()
                                 .fg(MD_TEXT)
                                 .bg(colors::CODE_BG),
