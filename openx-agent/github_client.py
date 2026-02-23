@@ -323,23 +323,13 @@ def create_pull(
             pr = repo.create_pull(title=title, body=body or None, head=head, base=base)
             web_base = _web_base_url()
             html_url = f"{web_base}/{repo_full_name}/pull/{pr.number}"
-            try:
-                created = repo.get_pull(pr.number)
-                return {
-                    "repo_full_name": repo_full_name,
-                    "number": created.number,
-                    "title": created.title,
-                    "state": created.state,
-                    "html_url": html_url,
-                }
-            except Exception:
-                return {
-                    "repo_full_name": repo_full_name,
-                    "number": pr.number,
-                    "title": pr.title,
-                    "state": pr.state,
-                    "html_url": html_url,
-                }
+            return {
+                "repo_full_name": repo_full_name,
+                "number": pr.number,
+                "title": title,
+                "state": "open",
+                "html_url": html_url,
+            }
         except Exception as e:
             return {"status": "error", "message": _github_error_message(e, for_issues=False)}
     return _bg(_do)
@@ -468,23 +458,13 @@ def create_issue(
             issue = repo.create_issue(title=title, body=body or None, labels=labels or [])
             web_base = _web_base_url()
             html_url = f"{web_base}/{repo_full_name}/issues/{issue.number}"
-            try:
-                created = repo.get_issue(issue.number)
-                return {
-                    "repo_full_name": repo_full_name,
-                    "number": created.number,
-                    "title": created.title,
-                    "state": created.state,
-                    "html_url": html_url,
-                }
-            except Exception:
-                return {
-                    "repo_full_name": repo_full_name,
-                    "number": issue.number,
-                    "title": issue.title,
-                    "state": issue.state,
-                    "html_url": html_url,
-                }
+            return {
+                "repo_full_name": repo_full_name,
+                "number": issue.number,
+                "title": title,
+                "state": "open",
+                "html_url": html_url,
+            }
         except Exception as e:
             return {"status": "error", "message": _github_error_message(e, for_issues=True)}
     return _bg(_do)

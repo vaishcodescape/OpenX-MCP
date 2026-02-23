@@ -29,10 +29,9 @@ class Settings:
     # Fine-grained PATs work: grant Issues + Pull requests "Read and write" and add repos under Repository access.
     github_token: str | None = os.getenv("GITHUB_TOKEN")
     github_base_url: str | None = os.getenv("GITHUB_BASE_URL")
-    huggingface_api_key: str | None = os.getenv("HUGGINGFACE_API_KEY")
-    huggingface_base_url: str | None = os.getenv("HUGGINGFACE_BASE_URL")
-    huggingface_model: str = os.getenv(
-        "HUGGINGFACE_MODEL", "meta-llama/Llama-3.1-8B-Instruct"
+    anthropic_api_key: str | None = os.getenv("ANTHROPIC_API_KEY")
+    anthropic_model: str = os.getenv(
+        "ANTHROPIC_MODEL", "claude-3-opus-latest"
     )
     # LLM: lower max_tokens = faster; timeout to avoid hanging. Tune via OPENX_LLM_MAX_TOKENS, OPENX_LLM_TIMEOUT_SEC.
     llm_max_tokens: int = int(os.getenv("OPENX_LLM_MAX_TOKENS", "768"))
