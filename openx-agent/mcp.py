@@ -211,6 +211,31 @@ def _merge_pr(params: dict[str, Any]) -> Any:
 
 
 @_tool(
+    name="github.create_pull",
+    description="Create a new pull request in a repository",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "repo_full_name": {"type": "string"},
+            "title": {"type": "string"},
+            "head": {"type": "string", "description": "Branch to merge into base"},
+            "base": {"type": "string", "description": "Target branch (e.g. main)"},
+            "body": {"type": "string"},
+        },
+        "required": ["repo_full_name", "title", "head"],
+    },
+)
+def _create_pull(params: dict[str, Any]) -> Any:
+    return create_pull(
+        params["repo_full_name"],
+        params["title"],
+        params["head"],
+        params.get("base", "main"),
+        params.get("body", ""),
+    )
+
+
+@_tool(
     name="github.get_readme",
     description="Get README content for a repo (path, content, sha, html_url). ref = branch/tag or omit for default.",
     input_schema={
@@ -283,19 +308,22 @@ def _get_issue(params: dict[str, Any]) -> Any:
 
 @_tool(
     name="github.create_issue",
-    description="Create a new issue (title, optional body and labels)",
+    description="Create a new issue in a repository",
     input_schema={
         "type": "object",
         "properties": {
             "repo_full_name": {"type": "string"},
             "title": {"type": "string"},
             "body": {"type": "string"},
-            "labels": {"type": "array", "items": {"type": "string"}},
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
         },
         "required": ["repo_full_name", "title"],
     },
 )
-def _create_issue(params: dict[str, Any]) -> Any:
+def _create_issue_tool(params: dict[str, Any]) -> Any:
     return create_issue(
         params["repo_full_name"],
         params["title"],

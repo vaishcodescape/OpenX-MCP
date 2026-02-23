@@ -374,15 +374,20 @@ You are OpenX. The user's prompt is your instruction: automatically pick the rig
 TOOLS (use these exact names; params in parentheses):
 {_TOOL_LIST}
 
-Format:
-Thought: <brief>
-Action: <tool_name>
-Action Input: <JSON>
+Format MUST be EXACTLY this, no exceptions:
+Thought: <thinking process>
+Action: <tool_name_exactly_as_written>
+Action Input: {{"param": "value"}}
 
-Then another Thought/Action or: Thought: Done. Final Answer: <result and any errors>
+STOP WRITING AFTER Action Input! Wait for me to give you the Observation.
+DO NOT WRITE "Observation:". I will provide it.
+DO NOT WRITE "Final Answer:" until you have actually received an Observation from a tool. 
 
-Rules: Action Input = valid JSON. One tool per Action. Always check Observation for errors; if tool failed, say so in Final Answer. Do not assume success without reading the result.
-Final Answer must be plain text for the user: summarize what was done and any outcomes. Never output raw JSON in Final Answer—always describe results in readable sentences."""
+When you have received the Observation and finished the task:
+Thought: Done.
+Final Answer: <result summarizing what you actually did>
+
+Rules: Action Input MUST be valid JSON. One tool per Action. ALWAYS check Observation for errors; if tool failed, explain it in Final Answer. NEVER output raw JSON in Final Answer—always describe results in readable natural language sentences."""
 
 # ---------------------------------------------------------------------------
 # Codebase context (opened workspace when script runs)
@@ -443,10 +448,6 @@ def _trim_history(cid: str) -> None:
     if len(h) > _MEMORY_WINDOW:
         _MEMORIES[cid] = h[-_MEMORY_WINDOW:]
 
-
-# ---------------------------------------------------------------------------
-# ReAct loop (text-based, no function-calling required)
-# ---------------------------------------------------------------------------
 
 _ACTION_RE = re.compile(r"Action:\s*(.+)", re.IGNORECASE)
 _ACTION_INPUT_RE = re.compile(r"Action Input:\s*(.+)", re.IGNORECASE | re.DOTALL)
@@ -529,19 +530,46 @@ def _run_react(user_message: str, history: list[tuple[str, str]]) -> str:
         if final_match:
             return final_match.group(1).strip()
 
+        tool_name = None
+        raw_input = "{}"
+
         # Check for Action.
         action_match = _ACTION_RE.search(response)
         if not action_match:
-            return response.strip()
+            # Fallback for models that just return JSON without the Action prefix
+            json_match = re.search(r"(\{.*?\})", response, re.DOTALL)
+            if json_match:
+                try:
+                    clean_input = json_match.group(1).strip("`").removeprefix("json").removeprefix("python").strip()
+                    args = json.loads(clean_input)
+                    # If it has a "tool" or "action" key, extract it
+                    parsed_tool = args.pop("tool", args.pop("action", None))
+                    if parsed_tool:
+                        tool_key = parsed_tool.replace(".", "_")
+                        if _TOOLS.get(tool_key) or _TOOLS.get(parsed_tool):
+                            tool_name = parsed_tool
+                            raw_input = json.dumps(args)
+                except json.JSONDecodeError:
+                    pass
+            
+            if not tool_name:
+                # Still no action found, maybe the model just gave the answer
+                return response.strip()
+        else:
+            tool_name = action_match.group(1).strip()
+            input_match = _ACTION_INPUT_RE.search(response)
+            if input_match:
+                raw_input = input_match.group(1).strip()
+            else:
+                json_match = re.search(r"(\{.*?\})", response[action_match.end():], re.DOTALL)
+                raw_input = json_match.group(1) if json_match else "{}"
 
-        tool_name = action_match.group(1).strip()
         tool_key = tool_name.replace(".", "_")
         tool = _TOOLS.get(tool_key) or _TOOLS.get(tool_name)
-        input_match = _ACTION_INPUT_RE.search(response)
-        raw_input = input_match.group(1).strip() if input_match else "{}"
 
         try:
-            args = json.loads(raw_input)
+            clean_input = raw_input.strip("`").removeprefix("json").removeprefix("python").strip()
+            args = json.loads(clean_input)
         except json.JSONDecodeError:
             args = {"input": raw_input.strip('"').strip("'")}
 
@@ -586,8 +614,8 @@ def chat(message: str, conversation_id: str = "default") -> str:
         logger.warning("Agent timeout: %s", exc)
         answer = "Request timed out. The model took too long to respond. Please try again or use a shorter prompt."
     except RuntimeError as exc:
-        if "HUGGINGFACE_API_KEY" in str(exc):
-            answer = "Configuration error: HUGGINGFACE_API_KEY is not set. Add it to .env for the Llama model."
+        if "ANTHROPIC_API_KEY" in str(exc):
+            answer = "Configuration error: ANTHROPIC_API_KEY is not set. Add it to .env for the Claude model."
         else:
             answer = f"Agent error: {exc}"
     except Exception as exc:

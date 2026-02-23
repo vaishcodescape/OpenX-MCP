@@ -17,7 +17,7 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 # Timeout for a single gh command (seconds).
-_GH_TIMEOUT = 15
+_GH_TIMEOUT = 30
 # Max workers for parallel gh calls.
 _EXECUTOR = ThreadPoolExecutor(max_workers=10, thread_name_prefix="gh_cli")
 
@@ -279,6 +279,8 @@ def create_issue(repo_full_name: str, title: str, body: str = "", labels: list[s
     args = ["issue", "create", "--repo", repo_full_name, "--title", title]
     if body:
         args.extend(["--body", body])
+    else:
+        args.extend(["--body", ""])
     if labels:
         for lb in labels:
             args.extend(["--label", lb])
@@ -310,6 +312,8 @@ def create_pr(
     ]
     if body:
         args.extend(["--body", body])
+    else:
+        args.extend(["--body", ""])
     out = _run_gh_capture_both(*args, timeout=20)
     if not out:
         return None

@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from huggingface_hub import InferenceClient
+import anthropic
 
 from ..config import settings
 
@@ -59,79 +59,35 @@ def _serialize_summary(summary: dict) -> str:
 logger = logging.getLogger(__name__)
 
 
-def _get_message_content(completion: Any) -> str | None:
-    """Extract assistant message content from chat completion response."""
-    try:
-        choices = getattr(completion, "choices", None)
-        if not choices:
-            logger.warning("LLM completion has no choices: %s", completion)
-            return None
-        choice = choices[0]
-        message = getattr(choice, "message", None)
-        if message is None:
-            logger.warning("LLM choice has no message: %s", choice)
-            return None
-        content = getattr(message, "content", None)
-        if content is not None and isinstance(content, str):
-            return content
-        # Fallback for backends that use "text"
-        text = getattr(message, "text", None)
-        if text is not None:
-            return str(text)
-        logger.warning("LLM message has no content or text field: %s", message)
-        return None
-    except Exception:
-        logger.exception("Failed to extract message content from LLM response")
-        return None
-
-
 def analyze_with_ai(summary: dict) -> dict[str, Any]:
-    if not settings.huggingface_api_key:
+    if not settings.anthropic_api_key:
         return {
             "enabled": False,
-            "message": "HUGGINGFACE_API_KEY not set. Set it in .env for AI analysis.",
+            "message": "ANTHROPIC_API_KEY not set. Set it in .env for AI code analysis.",
             "findings": [],
         }
 
-    model = settings.huggingface_model or "meta-llama/Llama-3.1-8B-Instruct"
-    base_url = settings.huggingface_base_url
+    model = settings.anthropic_model or "claude-3-opus-latest"
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    if base_url:
-        base_url = base_url.rstrip("/")
-        if base_url.endswith("/v1"):
-            base_url = base_url[:-3]
-
-    if base_url:
-        client = InferenceClient(
-            base_url=base_url,
-            api_key=settings.huggingface_api_key,
-        )
-    else:
-        client = InferenceClient(
-            provider="auto",
-            api_key=settings.huggingface_api_key,
-        )
     user_content = _serialize_summary(_compact_summary(summary))
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
+
     try:
-        completion = client.chat.completions.create(
+        response = client.messages.create(
             model=model,
-            messages=messages,
-            temperature=0.2,
             max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_content}],
         )
     except Exception as exc:
-        logger.exception("LLM request failed (model=%s, base_url=%s)", model, base_url)
+        logger.exception("Claude request failed (model=%s)", model)
         return {
             "enabled": True,
-            "message": f"LLM request failed: {exc!s}. Check HUGGINGFACE_API_KEY and HUGGINGFACE_BASE_URL. For Llama, accept the model license at huggingface.co/meta-llama/Llama-3.1-8B-Instruct and set HUGGINGFACE_MODEL if needed.",
+            "message": f"LLM request failed: {exc!s}. Check ANTHROPIC_API_KEY and ANTHROPIC_MODEL.",
         }
 
-    raw = _get_message_content(completion)
+    raw = response.content[0].text if response.content else ""
     message = (raw or "").strip() or (
-        "The model returned no text. Check HUGGINGFACE_MODEL and that your HF token has access to the Llama model."
+        "The model returned no text. Check ANTHROPIC_MODEL is set correctly."
     )
     return {"enabled": True, "message": message}
