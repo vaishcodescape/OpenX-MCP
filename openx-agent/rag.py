@@ -183,27 +183,35 @@ def _load_repo_listing() -> list[Document]:
 
 def index_repo(repo_full_name: str) -> dict[str, Any]:
     """Fetch GitHub data for a repo and build a FAISS index."""
+    from .progress import clear_progress, set_progress
+
+    op = "index"
     logger.info("Indexing repo: %s", repo_full_name)
+    set_progress(op, "fetch", "Fetching repo metadata and content...", {"repo": repo_full_name})
 
     docs: list[Document] = []
     docs.extend(_load_repo_metadata(repo_full_name))
     docs.extend(_load_pull_requests(repo_full_name))
+    set_progress(op, "fetch", f"Loaded {len(docs)} docs, loading README and workflows...", {"repo": repo_full_name})
     docs.extend(_load_readme(repo_full_name))
     docs.extend(_load_workflows(repo_full_name))
     docs.extend(_load_repo_listing())
 
     if not docs:
+        clear_progress(op)
         return {"status": "error", "message": "No documents fetched."}
 
+    set_progress(op, "embed", "Building embeddings and FAISS index...", {"document_count": len(docs)})
     embeddings = get_embeddings()
     store = FAISS.from_documents(docs, embeddings)
     _STORES[repo_full_name] = store
 
-    # Persist to disk.
+    set_progress(op, "save", "Saving index to disk...", {})
     os.makedirs(_CACHE_DIR, exist_ok=True)
     store_path = os.path.join(_CACHE_DIR, repo_full_name.replace("/", "_"))
     store.save_local(store_path)
 
+    clear_progress(op)
     logger.info("Indexed %d documents for %s", len(docs), repo_full_name)
     return {
         "status": "indexed",

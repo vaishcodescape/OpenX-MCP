@@ -68,12 +68,20 @@ def format_analysis_report(
     lines.append("## Architecture")
     lines.append("")
     arch = architecture
-    lines.append(f"- **Top-level dirs:** {', '.join(arch.get('top_level_dirs', []) or ['(none)')}")
+    lines.append(f"- **Top-level dirs:** {', '.join(arch.get('top_level_dirs', []) or ['(none)'])}")
     lines.append(f"- **Code files:** {arch.get('code_file_count', 0)}")
     lines.append(f"- **Total lines:** {arch.get('total_loc', 0)}")
     lang_break = arch.get("language_breakdown") or {}
     if lang_break:
         lines.append(f"- **Languages:** {', '.join(f'{k} ({v})' for k, v in sorted(lang_break.items()))}")
+    frameworks = arch.get("frameworks") or []
+    if frameworks:
+        lines.append(f"- **Frameworks detected:** {', '.join(frameworks)}")
+    risks = arch.get("risks") or []
+    if risks:
+        lines.append("- **Risks:**")
+        for r in risks:
+            lines.append(f"  - {r}")
     notes = arch.get("architecture_notes") or []
     for note in notes:
         lines.append(f"- {note}")

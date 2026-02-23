@@ -93,7 +93,7 @@ def analyze_with_ai(summary: dict) -> dict[str, Any]:
             "findings": [],
         }
 
-    model = settings.huggingface_model or "Qwen/Qwen2.5-Coder-32B-Instruct"
+    model = settings.huggingface_model or "meta-llama/Llama-3.1-8B-Instruct"
     base_url = settings.huggingface_base_url
 
     if base_url:
@@ -127,11 +127,11 @@ def analyze_with_ai(summary: dict) -> dict[str, Any]:
         logger.exception("LLM request failed (model=%s, base_url=%s)", model, base_url)
         return {
             "enabled": True,
-            "message": f"LLM request failed: {exc!s}. Check HUGGINGFACE_API_KEY and HUGGINGFACE_BASE_URL. If the default model is unavailable, set HUGGINGFACE_MODEL=Qwen/Qwen2.5-7B-Instruct in .env.",
+            "message": f"LLM request failed: {exc!s}. Check HUGGINGFACE_API_KEY and HUGGINGFACE_BASE_URL. For Llama, accept the model license at huggingface.co/meta-llama/Llama-3.1-8B-Instruct and set HUGGINGFACE_MODEL if needed.",
         }
 
     raw = _get_message_content(completion)
     message = (raw or "").strip() or (
-        "The model returned no text. Try HUGGINGFACE_MODEL=Qwen/Qwen2.5-7B-Instruct in .env if the default model is unavailable."
+        "The model returned no text. Check HUGGINGFACE_MODEL and that your HF token has access to the Llama model."
     )
     return {"enabled": True, "message": message}

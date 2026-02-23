@@ -23,6 +23,8 @@ from langchain_core.tools import StructuredTool
 
 from .command_router import help_text as get_help_text
 from .config import settings
+from .format_tool_output import format_tool_result
+from .workspace import git_current_branch, git_remote_url, list_dir as ws_list_dir
 from .mcp import TOOLS as MCP_TOOLS, call_tool
 from .rag import index_repo, search_github_knowledge
 
@@ -67,9 +69,7 @@ def _wrap_mcp_tool(name: str, description: str, input_schema: dict) -> Structure
     def handler(**kwargs: Any) -> str:
         try:
             result = call_tool(name, kwargs)
-            if isinstance(result, str):
-                return result
-            return json.dumps(result, indent=2, default=str)
+            return format_tool_result(result)
         except Exception as exc:
             return f"Error calling {name}: {exc}"
 
@@ -103,7 +103,7 @@ def _build_tools() -> dict[str, StructuredTool]:
         """Index a GitHub repository into the knowledge base."""
         try:
             result = index_repo(repo_full_name)
-            return json.dumps(result, indent=2)
+            return format_tool_result(result)
         except Exception as exc:
             return f"Error indexing {repo_full_name}: {exc}"
 
@@ -237,7 +237,23 @@ def _fast_path_parsers() -> dict[str, tuple[str, Any]]:
             return None
         return {"repo_full_name": p[0], "title": p[1], "body": " ".join(p[2:])}
 
+    def create_pr_parser(p: list[str]) -> dict | None:
+        if len(p) < 3:
+            return None
+        out: dict[str, Any] = {"repo_full_name": p[0], "title": p[1], "head": p[2]}
+        if len(p) > 3:
+            out["base"] = p[3]
+        if len(p) > 4:
+            out["body"] = " ".join(p[4:])
+        return out
+
+    def gh_command_parser(p: list[str]) -> dict | None:
+        if not p:
+            return None
+        return {"command": " ".join(p)}
+
     return {
+        "gh": ("github_run_gh_command", gh_command_parser),
         "help": ("openx_help", no_args),
         "?": ("openx_help", no_args),
         "tools": ("openx_help", no_args),
@@ -245,6 +261,7 @@ def _fast_path_parsers() -> dict[str, tuple[str, Any]]:
         "list_repos": ("github_list_repos", list_repos_parser),
         "list_prs": ("github_list_prs", repo_only),
         "get_pr": ("github_get_pr", repo_int),
+        "create_pr": ("github_create_pr", create_pr_parser),
         "comment_pr": ("github_comment_pr", repo_int_body),
         "merge_pr": ("github_merge_pr", merge_parser),
         "list_issues": ("github_list_issues", list_issues_parser),
@@ -291,7 +308,7 @@ def _try_fast_path(message: str) -> str | None:
         return None
     try:
         result = tool.invoke(args)
-        return result if isinstance(result, str) else json.dumps(result, indent=2, default=str)
+        return format_tool_result(result)
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -302,7 +319,7 @@ def _try_fast_path(message: str) -> str | None:
 
 # One line per tool: name + key params so the model picks and fills quickly.
 _TOOL_LINES = [
-    "github_list_repos(org?), github_list_prs(repo_full_name), github_get_pr(repo_full_name,number), github_comment_pr(repo_full_name,number,body), github_merge_pr(repo_full_name,number,method?)",
+    "github_list_repos(org?), github_list_prs(repo_full_name), github_get_pr(repo_full_name,number), github_create_pr(repo_full_name,title,head,base?,body?), github_comment_pr(repo_full_name,number,body), github_merge_pr(repo_full_name,number,method?), github_run_gh_command(command)",
     "github_get_readme(repo_full_name,ref?), github_update_readme(repo_full_name,content,branch?,message?)",
     "github_list_issues(repo_full_name,state?), github_get_issue(repo_full_name,number), github_create_issue(repo_full_name,title,body?,labels?), github_comment_issue(repo_full_name,number,body), github_close_issue(repo_full_name,number)",
     "github_list_workflows(repo_full_name), github_trigger_workflow(repo_full_name,workflow_id,ref), github_list_workflow_runs(repo_full_name,workflow_id), github_get_workflow_run(repo_full_name,run_id)",
@@ -313,13 +330,14 @@ _TOOL_LINES = [
 _TOOL_LIST = "\n".join(_TOOL_LINES)
 
 # Dense mapping so the model picks the right tool and args in one step.
-_SHORTCUT_MAPPING = """COMMAND → tool(args): list_repos→github_list_repos; list_prs→github_list_prs(repo_full_name); get_pr→github_get_pr(repo_full_name,number); comment_pr/merge_pr→github_comment_pr/github_merge_pr; get_readme→github_get_readme(repo_full_name,ref?); update_readme→github_update_readme(repo_full_name,content,branch?,message?); list_issues→github_list_issues(repo_full_name,state?); get_issue→github_get_issue(repo_full_name,number); create_issue→github_create_issue(repo_full_name,title,body?); comment_issue/close_issue→github_comment_issue/github_close_issue; list_workflows→github_list_workflows; trigger_workflow→github_trigger_workflow(repo_full_name,workflow_id,ref); list_workflow_runs/get_workflow_run→github_list_workflow_runs/github_get_workflow_run; get_failing_prs→github_get_failing_prs; heal_ci/heal_failing_pr→github_heal_failing_pr(repo,pr_number?) auto-modifies code and reruns CI; get_ci_logs/rerun_ci→github_get_ci_logs/github_rerun_ci(repo,workflow_run_id); analyze_ci_failure→github_analyze_ci_failure(logs); locate_code_context→github_locate_code_context(repo,error_context); generate_fix_patch/apply_fix_to_pr→github_generate_fix_patch/github_apply_fix_to_pr; analyze_repo→analysis_analyze_repo(path); index→index_github_repo(repo_full_name). repo = owner/repo."""
+_SHORTCUT_MAPPING = """COMMAND → tool(args): list_repos→github_list_repos; list_prs→github_list_prs(repo_full_name); get_pr→github_get_pr(repo_full_name,number); run gh / terminal gh → github_run_gh_command(command) e.g. command='pr list --repo owner/repo' or 'issue list'; comment_pr/merge_pr→github_comment_pr/github_merge_pr; get_readme→github_get_readme(repo_full_name,ref?); update_readme→github_update_readme(repo_full_name,content,branch?,message?); list_issues→github_list_issues(repo_full_name,state?); get_issue→github_get_issue(repo_full_name,number); create_issue→github_create_issue(repo_full_name,title,body?); create_pr/open_pr→github_create_pr(repo_full_name,title,head,base?); comment_issue/close_issue→github_comment_issue/github_close_issue; list_workflows→github_list_workflows; trigger_workflow→github_trigger_workflow(repo_full_name,workflow_id,ref); list_workflow_runs/get_workflow_run→github_list_workflow_runs/github_get_workflow_run; get_failing_prs→github_get_failing_prs; heal_ci/heal_failing_pr→github_heal_failing_pr(repo,pr_number?) auto-modifies code and reruns CI; get_ci_logs/rerun_ci→github_get_ci_logs/github_rerun_ci(repo,workflow_run_id); analyze_ci_failure→github_analyze_ci_failure(logs); locate_code_context→github_locate_code_context(repo,error_context); generate_fix_patch/apply_fix_to_pr→github_generate_fix_patch/github_apply_fix_to_pr; analyze_repo→analysis_analyze_repo(path); index→index_github_repo(repo_full_name). repo = owner/repo."""
 
 # Automation: how to set up CI/CD, PR, workflows, issues, README, and modify-commit-push.
 _AUTOMATION_PROMPT = """
 AUTOMATION / SETUP (do these via tools and report back):
+- GITHUB TERMINAL: When the user asks to run gh, use the terminal, or run a GitHub CLI command, use github_run_gh_command(command) with command as the full gh args (no leading 'gh'). Examples: 'pr list --repo owner/repo', 'issue list --repo owner/repo', 'run list --repo owner/repo', 'repo list'. Allowed: pr, issue, repo, run, workflow, api.
 - CI/CD: github_list_workflows(repo); github_trigger_workflow(repo,workflow_id,ref); github_rerun_ci(repo,workflow_run_id). AUTOMATIC CI HEALING: github_heal_failing_pr(repo,pr_number?) to auto-fix a failing PR (fetches logs, analyzes, generates patch, applies to PR, reruns CI). Step-by-step: github_get_failing_prs→get_ci_logs→analyze_ci_failure→locate_code_context→generate_fix_patch→apply_fix_to_pr.
-- PRs: list_prs→get_pr; comment_pr; merge_pr (merge|squash|rebase).
+- PRs: list_prs→get_pr; create_pr(repo,title,head,base?) to open a new PR; comment_pr; merge_pr (merge|squash|rebase).
 - Workflows: list_workflows; trigger_workflow; list_workflow_runs/get_workflow_run.
 - Issues: list_issues; get_issue; create_issue(repo,title,body?); comment_issue; close_issue.
 - README: github_get_readme(repo_full_name,ref?) to read; github_update_readme(repo_full_name,content,branch?,message?) to create or update README. Use when user asks to update docs, add badges, fix README, or modify readme.
@@ -340,7 +358,7 @@ PATH & REPO INFERENCE (do not require the user to supply these—infer or fetch 
 _ORCHESTRATION_PROMPT = """
 ORCHESTRATION & ERROR HANDLING:
 - You handle every user prompt by choosing and running the right tools. No prompt is "just chat"—always use tools to fulfill the request when possible.
-- After each Action, read the Observation: if it starts with "Error:" or contains "status\": \"error\" or "failed" or "not found", treat it as a failure. Report the error clearly in your Final Answer; do not assume success or continue as if the step succeeded.
+- After each Action, read the Observation: if it starts with "Error:" or "Tool error" or "**error**" or contains "failed" or "not found", treat it as a failure. Report the error clearly in your Final Answer; do not assume success or continue as if the step succeeded.
 - For multi-step flows (e.g. heal CI, modify README then push): if one step fails, stop and report what failed and why. Do not proceed to the next step with invalid state.
 - When a tool returns JSON with a "status" field, check it: status "error", "no_fix", "no_logs" etc. mean the operation did not fully succeed—surface that to the user.
 - Summarize what was done and any errors at the end (Final Answer).
@@ -363,7 +381,50 @@ Action Input: <JSON>
 
 Then another Thought/Action or: Thought: Done. Final Answer: <result and any errors>
 
-Rules: Action Input = valid JSON. One tool per Action. Always check Observation for errors; if tool failed, say so in Final Answer. Do not assume success without reading the result."""
+Rules: Action Input = valid JSON. One tool per Action. Always check Observation for errors; if tool failed, say so in Final Answer. Do not assume success without reading the result.
+Final Answer must be plain text for the user: summarize what was done and any outcomes. Never output raw JSON in Final Answer—always describe results in readable sentences."""
+
+# ---------------------------------------------------------------------------
+# Codebase context (opened workspace when script runs)
+# ---------------------------------------------------------------------------
+
+_CODEBASE_CONTEXT: str | None = None
+
+
+def _get_codebase_context() -> str:
+    """Build a short description of the current workspace for the agent. Cached after first call."""
+    global _CODEBASE_CONTEXT
+    if _CODEBASE_CONTEXT is not None:
+        return _CODEBASE_CONTEXT
+    root = getattr(settings, "workspace_root", "") or ""
+    parts = [f"Workspace: {root}"]
+    try:
+        branch = git_current_branch("")
+        if branch:
+            parts.append(f"Branch: {branch}")
+    except Exception:
+        pass
+    try:
+        url = git_remote_url("", "origin")
+        if url:
+            # Normalize to owner/repo for display (strip .git and common prefixes)
+            m = re.search(r"(?:github\.com[/:]|git@[^:]+:)([^/]+/[^/\s]+?)(?:\.git)?$", url)
+            if m:
+                parts.append(f"Repo: {m.group(1)}")
+            else:
+                parts.append(f"Remote: {url[:60]}{'...' if len(url) > 60 else ''}")
+    except Exception:
+        pass
+    try:
+        entries = ws_list_dir("", "")
+        names = [e.get("name", "") for e in entries[:20] if e.get("name")]
+        if names:
+            parts.append(f"Top-level: {', '.join(names)}")
+    except Exception:
+        pass
+    _CODEBASE_CONTEXT = " | ".join(parts)
+    return _CODEBASE_CONTEXT
+
 
 # ---------------------------------------------------------------------------
 # Per-conversation memory
@@ -442,8 +503,9 @@ def _run_react(user_message: str, history: list[tuple[str, str]]) -> str:
     for role, content in history[-_MEMORY_WINDOW:]:
         history_text += f"\n{role}: {content}"
 
+    codebase = _get_codebase_context()
     scratchpad = ""
-    fixed = _REACT_PROMPT + f"\n\nUser: {user_message}\n\n"
+    fixed = _REACT_PROMPT + f"\n\nCurrent codebase: {codebase}\n\nUser: {user_message}\n\n"
 
     for iteration in range(_MAX_ITERATIONS):
         variable = history_text + scratchpad
@@ -525,7 +587,7 @@ def chat(message: str, conversation_id: str = "default") -> str:
         answer = "Request timed out. The model took too long to respond. Please try again or use a shorter prompt."
     except RuntimeError as exc:
         if "HUGGINGFACE_API_KEY" in str(exc):
-            answer = "Configuration error: HUGGINGFACE_API_KEY is not set. Add it to .env."
+            answer = "Configuration error: HUGGINGFACE_API_KEY is not set. Add it to .env for the Llama model."
         else:
             answer = f"Agent error: {exc}"
     except Exception as exc:

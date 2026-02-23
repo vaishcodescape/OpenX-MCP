@@ -173,7 +173,7 @@ fn push_code_block(lines: &mut Vec<Line<'static>>, code_lines: &[String], lang: 
 
     // Bottom border
     lines.push(Line::from(Span::styled(
-        " └".to_string(),
+        " └",
         Style::default()
             .fg(colors::BORDER)
             .bg(colors::CODE_BG),

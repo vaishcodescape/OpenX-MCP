@@ -50,7 +50,7 @@ class HFInferenceChat(BaseChatModel):
     Uses the exact same API call pattern as ai_analysis.py which works.
     """
 
-    model: str = "Qwen/Qwen2.5-Coder-32B-Instruct"
+    model: str = "meta-llama/Llama-3.1-8B-Instruct"
     api_key: str = ""
     base_url: str = ""
     temperature: float = 0.2
@@ -138,17 +138,15 @@ class HFInferenceChat(BaseChatModel):
 # Factory
 # ---------------------------------------------------------------------------
 
-
 @lru_cache(maxsize=1)
 def get_llm() -> HFInferenceChat:
     """Return a cached chat LLM for LangChain agents/chains."""
     if not settings.huggingface_api_key:
         raise RuntimeError("HUGGINGFACE_API_KEY is required. Set it in .env.")
 
-    model = settings.huggingface_model or "Qwen/Qwen2.5-Coder-32B-Instruct"
+    model = settings.huggingface_model or "meta-llama/Llama-3.1-8B-Instruct"
     base_url = settings.huggingface_base_url or ""
 
-    # Normalize base_url.
     if base_url:
         base_url = base_url.rstrip("/")
         if base_url.endswith("/v1"):

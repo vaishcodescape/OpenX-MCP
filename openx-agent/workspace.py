@@ -111,3 +111,11 @@ def git_push(repo_path: str, remote: str = "origin", branch: str | None = None) 
 def git_current_branch(repo_path: str = "") -> str:
     """Return current branch name."""
     return _git(repo_path, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
+
+
+def git_remote_url(repo_path: str = "", remote: str = "origin") -> str:
+    """Return the URL of the given remote (e.g. https://github.com/owner/repo.git or git@github.com:owner/repo.git). Empty if not a git repo or remote missing."""
+    try:
+        return _git(repo_path, "remote", "get-url", remote)
+    except RuntimeError:
+        return ""

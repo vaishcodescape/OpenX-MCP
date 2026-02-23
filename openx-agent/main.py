@@ -25,6 +25,16 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/progress")
+async def progress(operation: str | None = None) -> dict:
+    """Return current progress for long-running operations (heal_ci, index). Poll for progress indicators."""
+    from .progress import get_progress
+    p = get_progress(operation)
+    if p is None:
+        return {"progress": None}
+    return {"progress": p}
+
+
 @app.get("/tools")
 async def tools() -> list:
     """Return list of MCP tools for command palette (name, description)."""

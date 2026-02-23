@@ -5,6 +5,7 @@ import difflib
 import io
 import json
 import re
+import threading
 import zipfile
 from typing import Any
 from urllib.parse import quote
@@ -12,6 +13,13 @@ from urllib.parse import quote
 import httpx
 
 from .config import settings
+from . import cache as _cache
+from . import gh_cli
+
+# CI check conclusions that indicate failure (single source of truth)
+_CHECK_CONCLUSION_FAILED = frozenset({
+    "failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale",
+})
 
 
 def _load_github() -> Any:
@@ -24,23 +32,73 @@ def _load_github() -> Any:
     return Github
 
 
+_github_client: Any = None
+_github_client_lock = threading.Lock()
+
+
 def _client() -> Any:
-    Github = _load_github()
-    if not settings.github_token:
-        raise RuntimeError("GITHUB_TOKEN is required for GitHub operations")
-    if settings.github_base_url:
-        return Github(base_url=settings.github_base_url, login_or_token=settings.github_token)
-    return Github(login_or_token=settings.github_token)
+    """Return a single shared PyGithub client (thread-safe, lazy init)."""
+    global _github_client
+    if _github_client is not None:
+        return _github_client
+    with _github_client_lock:
+        if _github_client is not None:
+            return _github_client
+        Github = _load_github()
+        if not settings.github_token:
+            raise RuntimeError("GITHUB_TOKEN is required for GitHub operations")
+        if settings.github_base_url:
+            _github_client = Github(base_url=settings.github_base_url, login_or_token=settings.github_token)
+        else:
+            _github_client = Github(login_or_token=settings.github_token)
+    return _github_client
+
+
+_http_client: httpx.Client | None = None
+_http_client_lock = threading.Lock()
+
+
+def _get_http_client() -> httpx.Client:
+    """Shared HTTP client for API requests (connection reuse, thread-safe)."""
+    global _http_client
+    if _http_client is not None:
+        return _http_client
+    with _http_client_lock:
+        if _http_client is not None:
+            return _http_client
+        _http_client = httpx.Client(timeout=60, follow_redirects=True)
+    return _http_client
 
 
 def get_repo(full_name: str) -> Any:
     return _client().get_repo(full_name)
 
 
+def _ci_status_from_check_runs(runs: list[dict[str, Any]]) -> str:
+    """Derive overall CI status from check_runs list. Returns 'failure' | 'success' | 'pending'."""
+    conclusions = [c.get("conclusion") for c in runs if c.get("conclusion")]
+    if any(c in _CHECK_CONCLUSION_FAILED for c in conclusions):
+        return "failure"
+    if all(c == "success" for c in conclusions):
+        return "success"
+    return "pending"
+
+
 def _api_base_url() -> str:
     if settings.github_base_url:
         return settings.github_base_url.rstrip("/")
     return "https://api.github.com"
+
+
+def _web_base_url() -> str:
+    """Base URL for GitHub web UI (issues/PRs). Matches the host we use for the API to avoid 404s."""
+    base = (settings.github_base_url or "").strip().rstrip("/")
+    if not base:
+        return "https://github.com"
+    # e.g. https://github.enterprise.com/api/v3 -> https://github.enterprise.com
+    if "/api/v3" in base or "/api/" in base:
+        base = base.split("/api/")[0]
+    return base.rstrip("/")
 
 
 def _api_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -58,60 +116,158 @@ def _api_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 def _api_request(method: str, path: str, *, json_body: dict[str, Any] | None = None) -> httpx.Response:
     url = f"{_api_base_url()}{path}"
-    with httpx.Client(timeout=60) as client:
-        resp = client.request(
-            method,
-            url,
-            headers=_api_headers(),
-            json=json_body,
-            follow_redirects=True,
-        )
+    client = _get_http_client()
+    resp = client.request(method, url, headers=_api_headers(), json=json_body)
     resp.raise_for_status()
     return resp
 
 
 def list_repos(org: str | None = None) -> list[dict[str, Any]]:
-    gh = _client()
-    repos = gh.get_user().get_repos() if org is None else gh.get_organization(org).get_repos()
-    return [
-        {
-            "full_name": r.full_name,
-            "private": r.private,
-            "default_branch": r.default_branch,
-            "html_url": r.html_url,
-        }
-        for r in repos
-    ]
+    def _fetch():
+        if gh_cli.available():
+            result = gh_cli.run_in_background(gh_cli.list_repos, org)
+            if result is not None:
+                return result
+        gh = _client()
+        repos = gh.get_user().get_repos() if org is None else gh.get_organization(org).get_repos()
+        return [
+            {"full_name": r.full_name, "private": r.private, "default_branch": r.default_branch, "html_url": r.html_url}
+            for r in repos
+        ]
+    cache_key = f"list_repos:{org or 'user'}"
+    return _cache.cached_list(cache_key, _cache.CACHE_TTL_LIST, _fetch)
 
 
-def list_open_prs(repo_full_name: str) -> list[dict[str, Any]]:
-    repo = get_repo(repo_full_name)
-    prs = repo.get_pulls(state="open")
-    return [
-        {
-            "number": pr.number,
-            "title": pr.title,
-            "user": pr.user.login,
-            "state": pr.state,
-            "html_url": pr.html_url,
-        }
-        for pr in prs
-    ]
+def list_open_prs(
+    repo_full_name: str,
+    include_ci_status: bool = False,
+    ci_status_max: int = 10,
+) -> list[dict[str, Any]]:
+    """List open PRs. If include_ci_status=True, add ci_status (success/failure/pending) for up to ci_status_max PRs."""
+
+    def _fetch() -> list[dict[str, Any]]:
+        if gh_cli.available() and not include_ci_status:
+            result = gh_cli.run_in_background(gh_cli.list_open_prs, repo_full_name, False)
+            if result is not None:
+                return result
+        if gh_cli.available() and include_ci_status:
+            result = gh_cli.run_in_background(gh_cli.list_open_prs, repo_full_name, True)
+            if result is not None:
+                return result
+        repo = get_repo(repo_full_name)
+        prs = repo.get_pulls(state="open")
+        out_inner: list[dict[str, Any]] = []
+        for i, pr in enumerate(prs):
+            entry: dict[str, Any] = {
+                "number": pr.number,
+                "title": pr.title,
+                "user": pr.user.login,
+                "state": pr.state,
+                "html_url": pr.html_url,
+            }
+            if include_ci_status and i < ci_status_max:
+                try:
+                    checks_resp = _api_request(
+                        "GET",
+                        f"/repos/{repo_full_name}/commits/{pr.head.sha}/check-runs",
+                    )
+                    runs = checks_resp.json().get("check_runs", [])
+                    if runs:
+                        entry["ci_status"] = _ci_status_from_check_runs(runs)
+                    else:
+                        status_resp = _api_request("GET", f"/repos/{repo_full_name}/commits/{pr.head.sha}/status")
+                        entry["ci_status"] = status_resp.json().get("state") or "pending"
+                except Exception:
+                    entry["ci_status"] = "unknown"
+            out_inner.append(entry)
+        return out_inner
+
+    if not include_ci_status:
+        return _cache.cached_list(f"list_prs:{repo_full_name}", _cache.CACHE_TTL_LIST, _fetch)
+    return _fetch()
 
 
 def get_pr(repo_full_name: str, number: int) -> dict[str, Any]:
-    repo = get_repo(repo_full_name)
-    pr = repo.get_pull(number)
-    return {
-        "number": pr.number,
-        "title": pr.title,
-        "body": pr.body,
-        "state": pr.state,
-        "user": pr.user.login,
-        "html_url": pr.html_url,
-        "head": pr.head.ref,
-        "base": pr.base.ref,
-    }
+    """Fetch PR details including files changed, diff, and CI check status."""
+
+    def _fetch() -> dict[str, Any]:
+        if gh_cli.available():
+            result = gh_cli.run_in_background(gh_cli.get_pr, repo_full_name, number)
+            if result is not None:
+                return result
+        repo = get_repo(repo_full_name)
+        pr = repo.get_pull(number)
+        head_sha = pr.head.sha
+        base_ref = pr.base.ref
+        head_ref = pr.head.ref
+
+        files_changed = []
+        combined_patch = []
+        try:
+            for f in pr.get_files():
+                patch = (f.patch or "")[:12000]
+                if patch:
+                    combined_patch.append(f"--- a/{f.filename}\n+++ b/{f.filename}\n{patch}")
+                files_changed.append({
+                    "filename": f.filename,
+                    "status": f.status,
+                    "additions": f.additions,
+                    "deletions": f.deletions,
+                    "patch": patch or None,
+                })
+        except Exception:
+            pass
+
+        diff_text = "\n".join(combined_patch)[:50000] if combined_patch else ""
+        if not diff_text:
+            try:
+                resp = _get_http_client().get(
+                    f"{_api_base_url()}/repos/{repo_full_name}/pulls/{number}",
+                    headers={**_api_headers(), "Accept": "application/vnd.github.v3.diff"},
+                    timeout=30,
+                )
+                if resp.status_code == 200 and resp.text:
+                    diff_text = resp.text[:50000]
+            except Exception:
+                pass
+
+        ci_checks = []
+        try:
+            checks_resp = _api_request(
+                "GET",
+                f"/repos/{repo_full_name}/commits/{head_sha}/check-runs",
+            )
+            for check in checks_resp.json().get("check_runs", []):
+                ci_checks.append({
+                    "name": check.get("name"),
+                    "status": check.get("status"),
+                    "conclusion": check.get("conclusion"),
+                    "details_url": check.get("details_url"),
+                })
+            if not ci_checks:
+                status_resp = _api_request("GET", f"/repos/{repo_full_name}/commits/{head_sha}/status")
+                state = status_resp.json().get("state")
+                if state:
+                    ci_checks.append({"name": "combined", "status": "completed", "conclusion": state, "details_url": None})
+        except Exception:
+            pass
+
+        return {
+            "number": pr.number,
+            "title": pr.title,
+            "body": pr.body,
+            "state": pr.state,
+            "user": pr.user.login,
+            "html_url": pr.html_url,
+            "head": head_ref,
+            "base": base_ref,
+            "head_sha": head_sha,
+            "files_changed": files_changed,
+            "diff": diff_text,
+            "ci_checks": ci_checks,
+        }
+
+    return _cache.cached_pr(repo_full_name, number, _fetch)
 
 
 def comment_pr(repo_full_name: str, number: int, body: str) -> dict[str, Any]:
@@ -126,6 +282,43 @@ def merge_pr(repo_full_name: str, number: int, method: str = "merge") -> dict[st
     pr = repo.get_pull(number)
     result = pr.merge(merge_method=method)
     return {"merged": result.merged, "message": result.message}
+
+
+def create_pull(
+    repo_full_name: str,
+    title: str,
+    head: str,
+    base: str = "main",
+    body: str = "",
+) -> dict[str, Any]:
+    """Create a pull request via GitHub API (uses GITHUB_TOKEN so it appears on the repo you expect)."""
+    repo_full_name = (repo_full_name or "").strip()
+    if not repo_full_name or "/" not in repo_full_name:
+        return {"status": "error", "message": "repo_full_name must be owner/repo (e.g. owner/repo)"}
+    try:
+        repo = get_repo(repo_full_name)
+        pr = repo.create_pull(title=title, body=body or None, head=head, base=base)
+        web_base = _web_base_url()
+        html_url = f"{web_base}/{repo_full_name}/pull/{pr.number}"
+        try:
+            created = repo.get_pull(pr.number)
+            return {
+                "repo_full_name": repo_full_name,
+                "number": created.number,
+                "title": created.title,
+                "state": created.state,
+                "html_url": html_url,
+            }
+        except Exception:
+            return {
+                "repo_full_name": repo_full_name,
+                "number": pr.number,
+                "title": pr.title,
+                "state": pr.state,
+                "html_url": html_url,
+            }
+    except Exception as e:
+        return {"status": "error", "message": _github_error_message(e, for_issues=False)}
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +366,10 @@ def list_issues(
     state: str = "open",
 ) -> list[dict[str, Any]]:
     """List issues in a repository. state: open, closed, or all."""
+    if gh_cli.available():
+        result = gh_cli.run_in_background(gh_cli.list_issues, repo_full_name, state)
+        if result is not None:
+            return result
     repo = get_repo(repo_full_name)
     issues = repo.get_issues(state=state)
     return [
@@ -190,6 +387,10 @@ def list_issues(
 
 def get_issue(repo_full_name: str, number: int) -> dict[str, Any]:
     """Get a single issue by number."""
+    if gh_cli.available():
+        result = gh_cli.run_in_background(gh_cli.get_issue, repo_full_name, number)
+        if result is not None:
+            return result
     repo = get_repo(repo_full_name)
     issue = repo.get_issue(number)
     return {
@@ -203,21 +404,55 @@ def get_issue(repo_full_name: str, number: int) -> dict[str, Any]:
     }
 
 
+def _github_error_message(exc: Exception, for_issues: bool = True) -> str:
+    """Return error message; append fine-grained token hint for permission-like errors."""
+    msg = str(exc)
+    lower = msg.lower()
+    if "403" in msg or "resource not accessible" in lower or "permission" in lower or "denied" in lower:
+        hint = (
+            " Fine-grained PAT: grant 'Issues: Read and write' and add this repo under Repository access."
+            if for_issues
+            else " Fine-grained PAT: grant 'Pull requests: Read and write' and add this repo under Repository access."
+        )
+        msg = msg.rstrip(".") + "." + hint
+    return msg
+
+
 def create_issue(
     repo_full_name: str,
     title: str,
     body: str = "",
     labels: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Create a new issue in the repository."""
-    repo = get_repo(repo_full_name)
-    issue = repo.create_issue(title=title, body=body or None, labels=labels or [])
-    return {
-        "number": issue.number,
-        "title": issue.title,
-        "state": issue.state,
-        "html_url": issue.html_url,
-    }
+    """Create a new issue via GitHub API (uses GITHUB_TOKEN so it appears on the repo you expect)."""
+    repo_full_name = (repo_full_name or "").strip()
+    if not repo_full_name or "/" not in repo_full_name:
+        return {"status": "error", "message": "repo_full_name must be owner/repo (e.g. owner/repo)"}
+    try:
+        repo = get_repo(repo_full_name)
+        issue = repo.create_issue(title=title, body=body or None, labels=labels or [])
+        # Verify it exists on GitHub by refetching; build URL from our API host to avoid 404.
+        web_base = _web_base_url()
+        html_url = f"{web_base}/{repo_full_name}/issues/{issue.number}"
+        try:
+            created = repo.get_issue(issue.number)
+            return {
+                "repo_full_name": repo_full_name,
+                "number": created.number,
+                "title": created.title,
+                "state": created.state,
+                "html_url": html_url,
+            }
+        except Exception:
+            return {
+                "repo_full_name": repo_full_name,
+                "number": issue.number,
+                "title": issue.title,
+                "state": issue.state,
+                "html_url": html_url,
+            }
+    except Exception as e:
+        return {"status": "error", "message": _github_error_message(e, for_issues=True)}
 
 
 def comment_issue(repo_full_name: str, number: int, body: str) -> dict[str, Any]:
@@ -310,14 +545,7 @@ def get_failing_prs(repo_full_name: str) -> list[dict[str, Any]]:
         checks_payload = checks_resp.json()
         for check in checks_payload.get("check_runs", []):
             conclusion = check.get("conclusion")
-            if conclusion in {
-                "failure",
-                "timed_out",
-                "cancelled",
-                "action_required",
-                "startup_failure",
-                "stale",
-            }:
+            if conclusion in _CHECK_CONCLUSION_FAILED:
                 failed_checks.append(
                     {
                         "name": check.get("name"),
@@ -689,20 +917,28 @@ def rerun_ci(repo_full_name: str, workflow_run_id: int) -> dict[str, Any]:
 def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[str, Any]:
     """Run full CI healing pipeline: find failing PR → get logs → analyze → locate context → generate patch → apply to PR → rerun CI.
     If pr_number is None, heals the first failing PR in the repo. Returns structured status and errors."""
+    from .progress import clear_progress, set_progress
+
+    op = "heal_ci"
     try:
+        set_progress(op, "get_failing_prs", "Finding PRs with failing CI...", {"repo": repo_full_name})
         failing = get_failing_prs(repo_full_name)
     except Exception as e:
+        clear_progress(op)
         return {"status": "error", "message": f"Failed to get failing PRs: {e}", "stage": "get_failing_prs"}
 
     if not failing:
+        clear_progress(op)
         return {"status": "no_failing_prs", "message": "No open PRs with failed CI in this repo."}
 
     pr_entry = next((p for p in failing if p["pr_number"] == pr_number), None) if pr_number else failing[0]
     if pr_number and not pr_entry:
+        clear_progress(op)
         return {"status": "not_failing", "message": f"PR #{pr_number} does not have failed CI or not found."}
 
     assert pr_entry is not None
     pr_num = pr_entry["pr_number"]
+    set_progress(op, "get_failing_prs", f"Found failing PR #{pr_num}", {"pr_number": pr_num})
     failed_checks = pr_entry.get("failed_checks", [])
     run_id = None
     for check in failed_checks:
@@ -710,6 +946,7 @@ def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[s
         if run_id:
             break
     if not run_id:
+        clear_progress(op)
         return {
             "status": "no_logs",
             "pr_number": pr_num,
@@ -717,18 +954,25 @@ def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[s
         }
 
     try:
+        set_progress(op, "get_ci_logs", "Fetching CI logs...", {"workflow_run_id": run_id})
         logs = get_ci_logs(repo_full_name, run_id)
     except Exception as e:
+        clear_progress(op)
         return {"status": "error", "pr_number": pr_num, "message": f"Failed to get CI logs: {e}", "stage": "get_ci_logs"}
 
+    set_progress(op, "analyze_ci_failure", "Analyzing failure...", {})
     error = analyze_ci_failure(logs)
     try:
+        set_progress(op, "locate_code_context", "Locating code context...", {"file_hint": error.get("file_hint")})
         code_context = locate_code_context(repo_full_name, error)
     except Exception as e:
+        clear_progress(op)
         return {"status": "error", "pr_number": pr_num, "message": f"Failed to locate code context: {e}", "stage": "locate_code_context"}
 
+    set_progress(op, "generate_fix_patch", "Generating fix patch...", {})
     patch = generate_fix_patch(code_context, error)
     if not patch or not patch.strip():
+        clear_progress(op)
         return {
             "status": "no_fix",
             "pr_number": pr_num,
@@ -738,14 +982,18 @@ def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[s
         }
 
     try:
+        set_progress(op, "apply_fix_to_pr", f"Applying patch to PR #{pr_num}...", {})
         result = apply_fix_to_pr(repo_full_name, pr_num, patch)
     except Exception as e:
+        clear_progress(op)
         return {"status": "error", "pr_number": pr_num, "message": f"Failed to apply fix to PR: {e}", "stage": "apply_fix_to_pr"}
 
     try:
+        set_progress(op, "rerun_ci", "Re-running CI...", {"workflow_run_id": run_id})
         rerun_ci(repo_full_name, run_id)
     except Exception as e:
         result["rerun_error"] = str(e)
+    clear_progress(op)
     result["status"] = "healed"
     result["pr_number"] = pr_num
     result["workflow_run_id"] = run_id

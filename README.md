@@ -18,11 +18,15 @@ pip install -e .
 ```
 
 Set env vars:
-- `GITHUB_TOKEN` (required for GitHub tools)
+- `GITHUB_TOKEN` (required for GitHub tools). **Fine-grained PATs** are supported: in GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens, create a token with **Repository access** to the repos you use, and under **Permissions** set at least:
+  - **Contents**: Read and write (for README, files, PRs)
+  - **Issues**: Read and write (for create/comment/close issues)
+  - **Pull requests**: Read and write (for create/comment/merge PRs)
+  - **Metadata**: Read-only (required)
 - `GITHUB_BASE_URL` (optional for GitHub Enterprise)
 - `HUGGINGFACE_API_KEY` (optional for AI analysis)
 - `HUGGINGFACE_BASE_URL` (optional, defaults to `https://router.huggingface.co/v1`)
-- `HUGGINGFACE_MODEL` (optional, defaults to `Qwen/Qwen2.5-Coder-32B-Instruct` — best HF coding model; use `Qwen/Qwen2.5-7B-Instruct` if unavailable)
+- `HUGGINGFACE_MODEL` (optional, defaults to `meta-llama/Llama-3.1-8B-Instruct`. Accept the [Llama 3.1 license](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) on Hugging Face. For higher quality set `meta-llama/Llama-3.1-70B-Instruct` if your account has access.)
 
 **Run openx-agent (MCP server):**
 
