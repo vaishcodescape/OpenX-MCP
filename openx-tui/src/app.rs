@@ -1,4 +1,4 @@
-//! Global state container and action dispatch (minimal assistant).
+//! Global app state container and action dispatcher.
 
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -10,145 +10,135 @@ use crate::git;
 use crate::services::normalize_slash_command;
 use crate::state::{CommandEntry, Message};
 
-/// Result of a background HTTP call (agent response).
+/// Result of a completed background HTTP call.
 pub enum BackendResult {
     Chat { text: String },
 }
 
 pub struct App {
     pub state: crate::state::AppState,
-    client: Arc<BackendClient>,
     pub should_quit: bool,
-    /// For spinner animation (incremented each tick).
+    /// Spinner animation counter (incremented each tick).
     pub tick: usize,
-    /// Current git branch (cached at startup).
+    /// Current git branch (read once at startup).
     pub git_branch: String,
-    /// Whether backend is reachable.
+    /// Whether the backend answered the health probe.
     pub connected: bool,
-    /// Channel for receiving background HTTP results.
+    client: Arc<BackendClient>,
     result_rx: mpsc::Receiver<BackendResult>,
     result_tx: mpsc::Sender<BackendResult>,
 }
 
 impl App {
     pub fn new(client: BackendClient) -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
         Self {
-            state: crate::state::AppState::default(),
-            client: Arc::new(client),
+            state: Default::default(),
             should_quit: false,
             tick: 0,
             git_branch: git::git_branch(),
             connected: false,
-            result_rx: rx,
-            result_tx: tx,
+            client: Arc::new(client),
+            result_rx,
+            result_tx,
         }
     }
 
-    /// Input has focus when the buffer is non-empty or explicitly focused.
+    /// `true` when the input field has focus (buffer is non-empty or explicitly focused).
     pub fn input_has_focus(&self) -> bool {
         self.state.input_focused || !self.state.input_buffer.is_empty()
     }
 
-    /// Sync palette query from input buffer (everything after leading '/').
-    fn sync_palette_query(&mut self) {
-        self.state.palette.query = self.state.input_buffer.get(1..).unwrap_or("").to_string();
-        update_palette_filter(&mut self.state.palette);
+    /// Estimate total display-line count across all chat messages.
+    fn chat_total_lines(messages: &[Message], gap: bool) -> usize {
+        messages
+            .iter()
+            .map(|m| m.content.lines().count().max(1) + usize::from(gap))
+            .sum()
     }
 
-    /// Estimated total line count for chat (for scroll-to-bottom). Uses content line count as proxy for display lines.
-    fn estimated_chat_total_lines(include_gap_per_message: bool) -> impl Fn(&[Message]) -> usize {
-        move |messages: &[Message]| {
-            messages
-                .iter()
-                .map(|m| m.content.lines().count().max(1) + if include_gap_per_message { 1 } else { 0 })
-                .sum()
-        }
-    }
-
+    /// Initialise the command palette and check backend connectivity.
     pub fn bootstrap(&mut self) {
         self.connected = self.client.health_check();
         self.state.chat.messages.push(Message::system(
-            "Welcome to OpenX. Type what you need or use / for shortcuts.".to_string(),
+            "Welcome to OpenX. Type what you need or use / for shortcuts.".into(),
         ));
 
-        // Built-in commands (always available, even without backend).
-        let builtins: Vec<CommandEntry> = vec![
-            CommandEntry { name: "/help".into(), description: "Show help and available commands".into() },
-            CommandEntry { name: "/tools".into(), description: "List all available MCP tools".into() },
-            CommandEntry { name: "/schema".into(), description: "Show tool schema / parameters".into() },
-            CommandEntry { name: "/call".into(), description: "Call a tool directly".into() },
-            CommandEntry { name: "/analyze".into(), description: "Analyze a repository".into() },
-            CommandEntry { name: "/repos".into(), description: "List repositories".into() },
-            CommandEntry { name: "/prs".into(), description: "List pull requests".into() },
-            CommandEntry { name: "/pr".into(), description: "Get pull request details".into() },
-            CommandEntry { name: "/issues".into(), description: "List issues in a repo".into() },
-            CommandEntry { name: "/issue".into(), description: "Get issue details".into() },
-            CommandEntry { name: "/newissue".into(), description: "Create a new issue".into() },
-            CommandEntry { name: "/commentissue".into(), description: "Comment on an issue".into() },
-            CommandEntry { name: "/closeissue".into(), description: "Close an issue".into() },
-            CommandEntry { name: "/comment".into(), description: "Comment on a pull request".into() },
-            CommandEntry { name: "/merge".into(), description: "Merge a pull request".into() },
-            CommandEntry { name: "/readme".into(), description: "Get or update README (use agent for update)".into() },
-            CommandEntry { name: "/workflows".into(), description: "List CI/CD workflows".into() },
-            CommandEntry { name: "/trigger".into(), description: "Trigger a workflow run".into() },
-            CommandEntry { name: "/runs".into(), description: "List workflow runs".into() },
-            CommandEntry { name: "/run".into(), description: "Get workflow run details".into() },
-            CommandEntry { name: "/failing".into(), description: "Get PRs with failing CI".into() },
-            CommandEntry { name: "/heal".into(), description: "Auto-heal failing PR (analyze, fix code, apply, rerun CI)".into() },
-            CommandEntry { name: "/logs".into(), description: "Get CI logs for a run".into() },
-            CommandEntry { name: "/analyze-failure".into(), description: "Analyze a CI failure".into() },
-            CommandEntry { name: "/context".into(), description: "Locate relevant code context".into() },
-            CommandEntry { name: "/patch".into(), description: "Generate a fix patch".into() },
-            CommandEntry { name: "/apply".into(), description: "Apply a fix to a pull request".into() },
-            CommandEntry { name: "/rerun".into(), description: "Re-run CI for a workflow".into() },
-            CommandEntry { name: "/chat".into(), description: "Chat with the AI agent (agentic reasoning)".into() },
-            CommandEntry { name: "/index".into(), description: "Index a repo into the RAG knowledge base".into() },
-            CommandEntry { name: "/reset".into(), description: "Clear agent conversation memory".into() },
-        ];
+        // Built-in commands (always present, even if the backend is down).
+        let builtins: Vec<CommandEntry> = [
+            ("/help",           "Show help and available commands"),
+            ("/tools",          "List all available MCP tools"),
+            ("/schema",         "Show tool schema / parameters"),
+            ("/call",           "Call a tool directly"),
+            ("/analyze",        "Analyze a repository"),
+            ("/repos",          "List repositories"),
+            ("/prs",            "List pull requests"),
+            ("/pr",             "Get pull request details"),
+            ("/issues",         "List issues in a repo"),
+            ("/issue",          "Get issue details"),
+            ("/newissue",       "Create a new issue"),
+            ("/commentissue",   "Comment on an issue"),
+            ("/closeissue",     "Close an issue"),
+            ("/comment",        "Comment on a pull request"),
+            ("/merge",          "Merge a pull request"),
+            ("/readme",         "Get or update README"),
+            ("/workflows",      "List CI/CD workflows"),
+            ("/trigger",        "Trigger a workflow run"),
+            ("/runs",           "List workflow runs"),
+            ("/run",            "Get workflow run details"),
+            ("/failing",        "Get PRs with failing CI"),
+            ("/heal",           "Auto-heal failing PR (analyze, fix, apply, rerun CI)"),
+            ("/logs",           "Get CI logs for a run"),
+            ("/analyze-failure","Analyze a CI failure"),
+            ("/context",        "Locate relevant code context"),
+            ("/patch",          "Generate a fix patch"),
+            ("/apply",          "Apply a fix to a pull request"),
+            ("/rerun",          "Re-run CI for a workflow"),
+            ("/chat",           "Chat with the AI agent (agentic reasoning)"),
+            ("/index",          "Index a repo into the RAG knowledge base"),
+            ("/reset",          "Clear agent conversation memory"),
+        ]
+        .iter()
+        .map(|&(name, desc)| CommandEntry { name: name.into(), description: desc.into() })
+        .collect();
+
         self.state.palette.commands = builtins;
 
         // Merge backend tools on top if available.
         if let Ok(tools) = self.client.list_tools() {
+            let existing: std::collections::HashSet<&str> =
+                self.state.palette.commands.iter().map(|c| c.name.as_str()).collect();
             let extra: Vec<CommandEntry> = tools
                 .into_iter()
-                .filter(|t| {
-                    !self.state.palette.commands.iter().any(|c| c.name == t.name)
-                })
-                .map(|t: ToolInfo| CommandEntry {
-                    name: t.name,
-                    description: t.description,
-                })
+                .filter(|t: &ToolInfo| !existing.contains(t.name.as_str()))
+                .map(|t| CommandEntry { name: t.name, description: t.description })
                 .collect();
             self.state.palette.commands.extend(extra);
         }
+
         update_palette_filter(&mut self.state.palette);
     }
 
-    /// Poll for completed background HTTP results. Call each tick.
+    /// Poll for completed background HTTP results. Call once per tick.
     pub fn poll_results(&mut self) {
         while let Ok(result) = self.result_rx.try_recv() {
             self.state.loading = false;
-            match result {
-                BackendResult::Chat { text } => {
-                    self.state.chat.messages.push(Message::openx(text));
-                }
+            if let BackendResult::Chat { text } = result {
+                self.state.chat.messages.push(Message::openx(text));
             }
-            // Auto-scroll to bottom on new message.
-            let total_lines = Self::estimated_chat_total_lines(true)(&self.state.chat.messages);
-            self.state.chat.scroll = total_lines.saturating_sub(10);
+            // Auto-scroll to the bottom on every new message.
+            let total = Self::chat_total_lines(&self.state.chat.messages, true);
+            self.state.chat.scroll = total.saturating_sub(10);
         }
     }
 
     pub fn dispatch(&mut self, action: Action) {
         match action {
             Action::Quit => self.should_quit = true,
-            Action::UnfocusInput => {
-                self.state.input_focused = false;
-            }
+
+            Action::UnfocusInput => self.state.input_focused = false,
 
             Action::Char(c) => {
-                // Auto-focus when the user begins typing.
                 self.state.input_focused = true;
                 let pos = self.state.input_cursor.min(self.state.input_buffer.len());
                 self.state.input_buffer.insert(pos, c);
@@ -157,24 +147,26 @@ impl App {
                     self.sync_palette_query();
                 }
             }
+
             Action::Backspace => {
-                if self.state.palette.visible {
-                    if self.state.input_cursor > 1 {
-                        self.state.input_buffer.remove(self.state.input_cursor - 1);
-                        self.state.input_cursor -= 1;
+                let cursor = self.state.input_cursor;
+                let min_cursor = if self.state.palette.visible { 1 } else { 0 };
+                if cursor > min_cursor {
+                    self.state.input_buffer.remove(cursor - 1);
+                    self.state.input_cursor -= 1;
+                    if self.state.palette.visible {
                         self.sync_palette_query();
                     }
-                } else if self.state.input_cursor > 0 && self.state.input_cursor <= self.state.input_buffer.len() {
-                    self.state.input_buffer.remove(self.state.input_cursor - 1);
-                    self.state.input_cursor -= 1;
                 }
             }
+
             Action::ClearInput => {
                 self.state.input_buffer.clear();
                 self.state.input_cursor = 0;
                 self.state.input_focused = false;
                 self.state.palette.visible = false;
             }
+
             Action::Submit => self.submit_input(),
 
             Action::CancelStreaming => {
@@ -182,43 +174,27 @@ impl App {
                 self.state.chat.streaming_content.clear();
             }
 
-            Action::ChatScrollPageUp => {
-                self.state.chat.scroll = self.state.chat.scroll.saturating_sub(10);
-            }
-            Action::ChatScrollPageDown => {
-                self.state.chat.scroll = self.state.chat.scroll.saturating_add(10);
-            }
-            Action::ChatScrollTop => self.state.chat.scroll = 0,
-            Action::ChatScrollBottom => {
-                let total = Self::estimated_chat_total_lines(false)(&self.state.chat.messages);
+            Action::ChatScrollPageUp   => { self.state.chat.scroll = self.state.chat.scroll.saturating_sub(10); }
+            Action::ChatScrollPageDown => { self.state.chat.scroll = self.state.chat.scroll.saturating_add(10); }
+            Action::ChatScrollTop      => self.state.chat.scroll = 0,
+            Action::ChatScrollBottom   => {
+                let total = Self::chat_total_lines(&self.state.chat.messages, false);
                 self.state.chat.scroll = total.saturating_sub(20);
             }
 
-            Action::HistoryUp => self.history_up(),
+            Action::HistoryUp   => self.history_up(),
             Action::HistoryDown => self.history_down(),
 
             Action::PaletteShow => {
                 self.state.palette.visible = true;
                 self.state.palette.query.clear();
-                self.state.input_buffer = "/".to_string();
+                self.state.input_buffer = "/".into();
                 self.state.input_cursor = 1;
                 update_palette_filter(&mut self.state.palette);
             }
-            Action::PaletteHide => {
-                self.state.palette.visible = false;
-            }
-            Action::PaletteUp => {
-                if !self.state.palette.filtered.is_empty() {
-                    let len = self.state.palette.filtered.len();
-                    self.state.palette.selected_index = (self.state.palette.selected_index + len - 1) % len;
-                }
-            }
-            Action::PaletteDown => {
-                if !self.state.palette.filtered.is_empty() {
-                    let len = self.state.palette.filtered.len();
-                    self.state.palette.selected_index = (self.state.palette.selected_index + 1) % len;
-                }
-            }
+            Action::PaletteHide => self.state.palette.visible = false,
+            Action::PaletteUp   => self.palette_move(-1),
+            Action::PaletteDown => self.palette_move(1),
             Action::PaletteSelect => {
                 if let Some(cmd) = self.state.palette.selected_command() {
                     self.state.input_buffer = cmd.name.clone();
@@ -229,12 +205,29 @@ impl App {
         }
     }
 
+    // ── Private helpers ───────────────────────────────────────────────────
+
+    fn sync_palette_query(&mut self) {
+        self.state.palette.query = self.state.input_buffer.get(1..).unwrap_or("").to_string();
+        update_palette_filter(&mut self.state.palette);
+    }
+
+    fn palette_move(&mut self, delta: isize) {
+        let len = self.state.palette.filtered.len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.state.palette.selected_index as isize;
+        self.state.palette.selected_index = ((cur + delta).rem_euclid(len as isize)) as usize;
+    }
+
     fn submit_input(&mut self) {
         let raw = self.state.input_buffer.trim().to_string();
         if raw.is_empty() {
             return;
         }
 
+        // While the palette is open, Enter selects the highlighted command.
         if self.state.palette.visible && !self.state.palette.filtered.is_empty() {
             if let Some(cmd) = self.state.palette.selected_command() {
                 self.state.input_buffer = cmd.name.clone();
@@ -244,79 +237,73 @@ impl App {
             return;
         }
 
-        // Don't allow submitting while another request is in-flight.
+        // Don't queue a second request while one is in-flight.
         if self.state.loading {
             return;
         }
 
+        // Clear the input and close the palette.
         self.state.palette.visible = false;
         self.state.input_buffer.clear();
         self.state.input_cursor = 0;
         self.state.input_focused = false;
 
+        // Deduplicate history.
         let command = normalize_slash_command(&raw);
-        if self.state.history.last().as_deref() != Some(&raw) {
+        if self.state.history.last().map(|s| s.as_str()) != Some(&raw) {
             self.state.history.push(raw);
         }
         self.state.history_index = self.state.history.len();
 
         self.state.chat.messages.push(Message::user(command.clone()));
-        self.state.loading = true;
-        self.state.chat.streaming_content.clear();
 
-        // Quit/exit: handle locally for instant, Codex-like response.
-        if command == "quit" || command == "exit" {
-            self.state.loading = false;
-            self.state.chat.messages.push(Message::openx("Goodbye.".to_string()));
+        // Handle quit locally for an instant response.
+        if matches!(command.as_str(), "quit" | "exit") {
+            self.state.chat.messages.push(Message::openx("Goodbye.".into()));
             self.should_quit = true;
             return;
         }
 
-        // All other input (free-form and slash commands) goes to the LLM agent.
-        // The agent interprets intent and uses tools — e.g. /prs → list_prs, natural language → tools.
-        let tx = self.result_tx.clone();
-        let client = Arc::clone(&self.client);
-        let message = command
-            .strip_prefix("chat ")
-            .unwrap_or(&command)
-            .trim()
-            .to_string();
+        self.state.loading = true;
+        self.state.chat.streaming_content.clear();
 
+        // Strip a leading "chat " prefix so /chat <msg> and <msg> both work.
+        let message = command.strip_prefix("chat ").unwrap_or(&command).trim().to_string();
+
+        let tx     = self.result_tx.clone();
+        let client = Arc::clone(&self.client);
         thread::spawn(move || {
-            let result = client.chat(&message, "tui-default");
-            let text = match result {
-                Ok(r) => r.error.unwrap_or_else(|| {
-                    r.response.unwrap_or_else(|| "(no response)".to_string())
-                }),
-                Err(e) => format!("Error: {}", e),
+            let text = match client.chat(&message, "tui-default") {
+                Ok(r)  => r.error.or(r.response).unwrap_or_else(|| "(no response)".into()),
+                Err(e) => format!("Error: {e}"),
             };
             let _ = tx.send(BackendResult::Chat { text });
         });
     }
 
     fn history_up(&mut self) {
-        if self.state.palette.visible {
+        if self.state.palette.visible || self.state.history.is_empty() || self.state.history_index == 0 {
             return;
         }
-        if !self.state.history.is_empty() && self.state.history_index > 0 {
-            self.state.history_index -= 1;
-            self.state.input_buffer = self.state.history[self.state.history_index].clone();
-            self.state.input_cursor = self.state.input_buffer.len();
-        }
+        self.state.history_index -= 1;
+        self.state.input_buffer  = self.state.history[self.state.history_index].clone();
+        self.state.input_cursor  = self.state.input_buffer.len();
     }
 
     fn history_down(&mut self) {
         if self.state.palette.visible {
             return;
         }
-        if self.state.history_index < self.state.history.len() {
-            self.state.history_index += 1;
-            self.state.input_buffer = if self.state.history_index >= self.state.history.len() {
-                String::new()
-            } else {
-                self.state.history[self.state.history_index].clone()
-            };
-            self.state.input_cursor = self.state.input_buffer.len();
+        let len = self.state.history.len();
+        if self.state.history_index >= len {
+            return;
         }
+        self.state.history_index += 1;
+        self.state.input_buffer = if self.state.history_index >= len {
+            String::new()
+        } else {
+            self.state.history[self.state.history_index].clone()
+        };
+        self.state.input_cursor = self.state.input_buffer.len();
     }
 }

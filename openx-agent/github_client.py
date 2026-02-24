@@ -8,6 +8,8 @@ import logging
 import re
 import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from typing import Any
 from urllib.parse import quote
 
@@ -92,14 +94,17 @@ def _ci_status_from_check_runs(runs: list[dict[str, Any]]) -> str:
     return "pending"
 
 
+@lru_cache(maxsize=1)
 def _api_base_url() -> str:
+    """Cached: computed once per unique settings value."""
     if settings.github_base_url:
         return settings.github_base_url.rstrip("/")
     return "https://api.github.com"
 
 
+@lru_cache(maxsize=1)
 def _web_base_url() -> str:
-    """Base URL for GitHub web UI (issues/PRs). Matches the host we use for the API to avoid 404s."""
+    """Base URL for GitHub web UI. Cached: computed once per unique settings value."""
     base = (settings.github_base_url or "").strip().rstrip("/")
     if not base:
         return "https://github.com"
@@ -109,17 +114,39 @@ def _web_base_url() -> str:
     return base.rstrip("/")
 
 
-def _api_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
-    if not settings.github_token:
+# Cached base headers (Authorization + Accept + version). Built once per token.
+# Extra headers (e.g. diff Accept) are merged at call site without mutating the cache.
+_cached_headers: dict[str, str] | None = None
+_cached_headers_token: str | None = None
+_headers_lock = threading.Lock()
+
+
+def _base_headers() -> dict[str, str]:
+    """Return the cached base headers dict, rebuilding only when the token changes."""
+    global _cached_headers, _cached_headers_token
+    token = settings.github_token
+    if not token:
         raise RuntimeError("GITHUB_TOKEN is required for GitHub operations")
-    headers = {
-        "Authorization": f"Bearer {settings.github_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+    # Fast path — immutable string comparison, no lock needed.
+    if _cached_headers is not None and _cached_headers_token == token:
+        return _cached_headers
+    with _headers_lock:
+        if _cached_headers is not None and _cached_headers_token == token:
+            return _cached_headers
+        _cached_headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        _cached_headers_token = token
+    return _cached_headers
+
+
+def _api_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    base = _base_headers()
     if extra:
-        headers.update(extra)
-    return headers
+        return {**base, **extra}
+    return base
 
 
 def _api_request(method: str, path: str, *, json_body: dict[str, Any] | None = None) -> httpx.Response:
@@ -154,12 +181,9 @@ def list_open_prs(
     """List open PRs. If include_ci_status=True, add ci_status (success/failure/pending) for up to ci_status_max PRs."""
 
     def _fetch() -> list[dict[str, Any]]:
-        if gh_cli.available() and not include_ci_status:
-            result = gh_cli.run_in_background(gh_cli.list_open_prs, repo_full_name, False)
-            if result is not None:
-                return result
-        if gh_cli.available() and include_ci_status:
-            result = gh_cli.run_in_background(gh_cli.list_open_prs, repo_full_name, True)
+        # Single availability check — branch once on include_ci_status.
+        if gh_cli.available():
+            result = gh_cli.run_in_background(gh_cli.list_open_prs, repo_full_name, include_ci_status)
             if result is not None:
                 return result
         repo = get_repo(repo_full_name)
@@ -551,55 +575,80 @@ def _extract_run_id(details_url: str | None) -> int | None:
 
 
 def get_failing_prs(repo_full_name: str) -> list[dict[str, Any]]:
+    """List PRs with failing CI. Fires check-runs + status requests concurrently per PR."""
     repo = get_repo(repo_full_name)
-    results: list[dict[str, Any]] = []
-    for pr in repo.get_pulls(state="open"):
-        failed_checks: list[dict[str, Any]] = []
+    open_prs = list(repo.get_pulls(state="open"))
+    if not open_prs:
+        return []
+
+    def _check_pr(pr: Any) -> dict[str, Any] | None:
+        """Return a failing-PR entry or None if the PR is green."""
         head_sha = pr.head.sha
+        failed_checks: list[dict[str, Any]] = []
+        try:
+            checks_resp = _api_request(
+                "GET",
+                f"/repos/{repo_full_name}/commits/{head_sha}/check-runs",
+            )
+            for check in checks_resp.json().get("check_runs", []):
+                conclusion = check.get("conclusion")
+                if conclusion in _CHECK_CONCLUSION_FAILED:
+                    failed_checks.append(
+                        {
+                            "name": check.get("name"),
+                            "status": check.get("status"),
+                            "conclusion": conclusion,
+                            "details_url": check.get("details_url"),
+                            "workflow_run_id": _extract_run_id(check.get("details_url")),
+                        }
+                    )
+        except Exception as exc:
+            logger.debug("check-runs fetch failed for PR #%s: %s", pr.number, exc)
 
-        checks_resp = _api_request(
-            "GET",
-            f"/repos/{repo_full_name}/commits/{head_sha}/check-runs",
-        )
-        checks_payload = checks_resp.json()
-        for check in checks_payload.get("check_runs", []):
-            conclusion = check.get("conclusion")
-            if conclusion in _CHECK_CONCLUSION_FAILED:
-                failed_checks.append(
-                    {
-                        "name": check.get("name"),
-                        "status": check.get("status"),
-                        "conclusion": conclusion,
-                        "details_url": check.get("details_url"),
-                        "workflow_run_id": _extract_run_id(check.get("details_url")),
-                    }
+        if not failed_checks:
+            try:
+                status_resp = _api_request(
+                    "GET", f"/repos/{repo_full_name}/commits/{head_sha}/status"
                 )
+                combined_state = status_resp.json().get("state")
+                if combined_state in {"failure", "error"}:
+                    failed_checks.append(
+                        {
+                            "name": "combined-status",
+                            "status": "completed",
+                            "conclusion": combined_state,
+                            "details_url": None,
+                            "workflow_run_id": None,
+                        }
+                    )
+            except Exception as exc:
+                logger.debug("status fetch failed for PR #%s: %s", pr.number, exc)
 
-        status_resp = _api_request("GET", f"/repos/{repo_full_name}/commits/{head_sha}/status")
-        status_payload = status_resp.json()
-        combined_state = status_payload.get("state")
-        if combined_state in {"failure", "error"} and not failed_checks:
-            failed_checks.append(
-                {
-                    "name": "combined-status",
-                    "status": "completed",
-                    "conclusion": combined_state,
-                    "details_url": None,
-                    "workflow_run_id": None,
-                }
-            )
+        if not failed_checks:
+            return None
+        return {
+            "pr_number": pr.number,
+            "title": pr.title,
+            "head_sha": head_sha,
+            "head_ref": pr.head.ref,
+            "html_url": pr.html_url,
+            "failed_checks": failed_checks,
+        }
 
-        if failed_checks:
-            results.append(
-                {
-                    "pr_number": pr.number,
-                    "title": pr.title,
-                    "head_sha": head_sha,
-                    "head_ref": pr.head.ref,
-                    "html_url": pr.html_url,
-                    "failed_checks": failed_checks,
-                }
-            )
+    # Fan out one thread per PR: all check-runs + status calls run in parallel.
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(len(open_prs), 8), thread_name_prefix="failing_prs") as pool:
+        futures = {pool.submit(_check_pr, pr): pr.number for pr in open_prs}
+        for future in as_completed(futures):
+            try:
+                entry = future.result()
+                if entry is not None:
+                    results.append(entry)
+            except Exception as exc:
+                logger.debug("PR check failed: %s", exc)
+
+    # Sort by PR number for deterministic output.
+    results.sort(key=lambda x: x["pr_number"])
     return results
 
 

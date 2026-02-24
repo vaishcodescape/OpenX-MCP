@@ -1,60 +1,70 @@
+"""Central configuration — loaded once from .env at import time.
+
+All settings are read from environment variables (with sensible defaults).
+The frozen dataclass prevents accidental mutation; use `resolve_repo` to
+normalise the repo name from user input or the active-repo setting.
+"""
+
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# Load .env from project root (parent of openx_agent package) so config works regardless of cwd.
-_env_loaded = False
 
-
-def _ensure_dotenv() -> None:
-    global _env_loaded
-    if _env_loaded:
-        return
+def _load_dotenv() -> None:
+    """Load .env from the project root (parent of this package directory)."""
     try:
         from dotenv import load_dotenv
-        # openx_agent/config.py -> parent = openx_agent, parent.parent = project root
-        root = Path(__file__).resolve().parent.parent
-        load_dotenv(root / ".env")
-        _env_loaded = True
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     except Exception:
-        _env_loaded = True  # avoid retry
+        pass  # dotenv not installed or .env absent — env vars still work
 
 
-_ensure_dotenv()  # run before Settings so os.getenv below sees .env
+_load_dotenv()
+
 
 @dataclass(frozen=True)
 class Settings:
-    # Fine-grained PATs work: grant Issues + Pull requests "Read and write" and add repos under Repository access.
+    # GitHub — fine-grained PAT: grant Issues + Pull requests "Read and write".
     github_token: str | None = os.getenv("GITHUB_TOKEN")
     github_base_url: str | None = os.getenv("GITHUB_BASE_URL")
+
+    # Anthropic / Claude
     anthropic_api_key: str | None = os.getenv("ANTHROPIC_API_KEY")
-    anthropic_model: str = os.getenv(
-        "ANTHROPIC_MODEL", "claude-3-opus-latest"
-    )
-    # LLM: lower max_tokens = faster; timeout to avoid hanging. Tune via OPENX_LLM_MAX_TOKENS, OPENX_LLM_TIMEOUT_SEC.
+    anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-3-opus-latest")
+
+    # LLM tuning — lower max_tokens = faster; tune via env vars.
     llm_max_tokens: int = int(os.getenv("OPENX_LLM_MAX_TOKENS", "768"))
     llm_timeout_sec: float = float(os.getenv("OPENX_LLM_TIMEOUT_SEC", "90"))
+
+    # LangSmith tracing (optional)
     langsmith_api_key: str | None = os.getenv("LANGCHAIN_API_KEY")
     langsmith_tracing: bool = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
     langsmith_project: str = os.getenv("LANGCHAIN_PROJECT", "openx-agent")
-    # Root directory for local repo operations (read_file, write_file, git_*). Default: cwd.
+
+    # Local workspace root for file/git operations (defaults to cwd).
     workspace_root: str = os.getenv("OPENX_WORKSPACE_ROOT", os.getcwd())
-    # Active repository (owner/repo) for commands that operate on "current" repo when not specified.
+
+    # Active repository (owner/repo) — used when no explicit repo is given.
     active_repo: str | None = os.getenv("OPENX_ACTIVE_REPO")
 
 
-def resolve_repo(repo: str | None, *, required: bool = True) -> str:
-    """Resolve repo_full_name: use argument, else OPENX_ACTIVE_REPO, else raise or return None."""
-    out = (repo or "").strip() or (settings.active_repo or "").strip()
-    if required and not out:
-        raise ValueError(
-            "No repository specified. Set OPENX_ACTIVE_REPO (e.g. owner/repo) or pass repo to the command."
-        )
-    return out
-
-
 settings = Settings()
-# Alias for backward compatibility with mcp.py and other callers.
+# Alias kept for any legacy imports.
 config_settings = settings
+
+
+def resolve_repo(repo: str | None, *, required: bool = True) -> str:
+    """Return a canonical owner/repo string.
+
+    Preference order: explicit argument → OPENX_ACTIVE_REPO env var.
+    Raises `ValueError` when `required` is True and nothing is available.
+    """
+    resolved = (repo or "").strip() or (settings.active_repo or "").strip()
+    if required and not resolved:
+        raise ValueError(
+            "No repository specified. Set OPENX_ACTIVE_REPO (e.g. owner/repo)"
+            " or pass the repo to the command."
+        )
+    return resolved
