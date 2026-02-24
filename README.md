@@ -100,7 +100,7 @@ Supports: `ModuleNotFoundError`, `ImportError`, `SyntaxError`, `NameError`, `tes
 ## Quick Start
 
 ### Prerequisites
-- Python 3.11+, Rust toolchain (for TUI), `gh` CLI (optional, for fast GitHub operations)
+- Python 3.14+, Rust toolchain (for TUI), `gh` CLI (optional, for fast GitHub operations)
 
 ### Installation
 
