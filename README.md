@@ -201,8 +201,35 @@ OpenX-MCP/
 
 ---
 
- 
- 
+## Steps for Contribution
+
+1. **Fork the repository** — Click "Fork" on GitHub to create your own copy under your account.
+
+2. **Clone your fork** — Clone the forked repo locally and add the upstream remote:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/OpenX-MCP.git
+   cd OpenX-MCP
+   git remote add upstream https://github.com/vaishcodescape/OpenX-MCP.git
+   ```
+
+3. **Create a branch** — Use a short, descriptive branch name (e.g. `fix/ci-timeout`, `feat/workspace-sandbox`):
+   ```bash
+   git checkout -b your-branch-name
+   ```
+
+4. **Make your changes** — Follow existing code style and run tests/linters. For Python: `pip install -e ".[dev]"` (if available) and run tests; for Rust: `cargo test` in `openx-tui/`.
+
+5. **Commit and push** — Use clear commit messages and push to your fork:
+   ```bash
+   git add .
+   git commit -m "Brief description of your change"
+   git push origin your-branch-name
+   ```
+
+6. **Open a Pull Request** — On GitHub, open a PR from your branch to `vaishcodescape/OpenX-MCP` main. Describe what you changed and why; link any related issues.
+
+7. **Address review feedback** — Respond to comments and push additional commits to the same branch as needed.
+
 ---
 
 ## License
