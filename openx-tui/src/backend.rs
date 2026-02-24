@@ -1,9 +1,16 @@
-//! HTTP client for the OpenX backend (POST /run, GET /tools).
+//! HTTP client for the OpenX backend (blocking, used from the TUI thread pool).
+//!
+//! All requests are sent with a 120-second timeout so the TUI never hangs
+//! waiting for a long-running agent response.
 
 use serde::Deserialize;
 
+// ---------------------------------------------------------------------------
+// Response types
+// ---------------------------------------------------------------------------
+
+/// Response from `POST /run` (legacy endpoint, kept for compatibility).
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct RunResponse {
     pub should_continue: bool,
     pub output: Option<serde_json::Value>,
@@ -11,20 +18,24 @@ pub struct RunResponse {
     pub error: Option<String>,
 }
 
+/// Response from `POST /chat`.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct ChatResponse {
     pub response: Option<String>,
     pub conversation_id: Option<String>,
     pub error: Option<String>,
 }
 
-/// Tool entry from GET /tools (name, description for command palette).
+/// One entry in the command palette (from `GET /tools`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolInfo {
     pub name: String,
     pub description: String,
 }
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
 
 pub struct BackendClient {
     base_url: String,
@@ -36,61 +47,59 @@ impl BackendClient {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
-            .expect("reqwest client");
+            .expect("failed to build reqwest client");
         Self { base_url, client }
     }
 
-    /// Run a command string via POST /run (e.g. for other clients). TUI uses /chat only.
+    fn url(&self, path: &str) -> String {
+        format!("{}/{}", self.base_url.trim_end_matches('/'), path.trim_start_matches('/'))
+    }
+
+    fn check(resp: reqwest::blocking::Response) -> Result<reqwest::blocking::Response, String> {
+        if resp.status().is_success() {
+            Ok(resp)
+        } else {
+            Err(format!("HTTP {}: {}", resp.status(), resp.text().unwrap_or_default()))
+        }
+    }
+
+    /// Liveness probe (`GET /health`).
+    pub fn health_check(&self) -> bool {
+        self.client
+            .get(&self.url("health"))
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+    }
+
+    /// Fetch the command palette entries (`GET /tools`).
+    pub fn list_tools(&self) -> Result<Vec<ToolInfo>, String> {
+        let resp = self.client.get(&self.url("tools")).send().map_err(|e| e.to_string())?;
+        Self::check(resp)?.json::<Vec<ToolInfo>>().map_err(|e| e.to_string())
+    }
+
+    /// Send a message to the LangChain agent (`POST /chat`).
+    pub fn chat(&self, message: &str, conversation_id: &str) -> Result<ChatResponse, String> {
+        let body = serde_json::json!({ "message": message, "conversation_id": conversation_id });
+        let resp = self
+            .client
+            .post(&self.url("chat"))
+            .json(&body)
+            .send()
+            .map_err(|e| e.to_string())?;
+        Self::check(resp)?.json::<ChatResponse>().map_err(|e| e.to_string())
+    }
+
+    /// Run a raw command string (`POST /run`). Kept for non-TUI callers.
     #[allow(dead_code)]
     pub fn run(&self, command: &str) -> Result<RunResponse, String> {
-        let url = format!("{}/run", self.base_url.trim_end_matches('/'));
         let body = serde_json::json!({ "command": command });
         let resp = self
             .client
-            .post(&url)
+            .post(&self.url("run"))
             .json(&body)
             .send()
             .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}: {}", resp.status(), resp.text().unwrap_or_default()));
-        }
-        let run: RunResponse = resp.json().map_err(|e| e.to_string())?;
-        Ok(run)
-    }
-
-    /// Fetch command palette entries from backend (GET /tools).
-    pub fn list_tools(&self) -> Result<Vec<ToolInfo>, String> {
-        let url = format!("{}/tools", self.base_url.trim_end_matches('/'));
-        let resp = self.client.get(&url).send().map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}: {}", resp.status(), resp.text().unwrap_or_default()));
-        }
-        let tools: Vec<ToolInfo> = resp.json().map_err(|e| e.to_string())?;
-        Ok(tools)
-    }
-
-    pub fn health_check(&self) -> bool {
-        let url = format!("{}/health", self.base_url.trim_end_matches('/'));
-        self.client.get(&url).send().map(|r| r.status().is_success()).unwrap_or(false)
-    }
-
-    /// Send a message to the LangChain agent via POST /chat.
-    pub fn chat(&self, message: &str, conversation_id: &str) -> Result<ChatResponse, String> {
-        let url = format!("{}/chat", self.base_url.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "message": message,
-            "conversation_id": conversation_id,
-        });
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}: {}", resp.status(), resp.text().unwrap_or_default()));
-        }
-        let chat: ChatResponse = resp.json().map_err(|e| e.to_string())?;
-        Ok(chat)
+        Self::check(resp)?.json::<RunResponse>().map_err(|e| e.to_string())
     }
 }

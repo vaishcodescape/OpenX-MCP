@@ -1,4 +1,9 @@
-"""Local workspace: read/write files and git operations for modify-commit-push automation."""
+"""Local workspace operations: read/write files and git automation.
+
+All paths are validated against the workspace root before any I/O so that
+agents cannot escape the sandbox via path traversal.  Git subcommands run in
+a dedicated thread pool to avoid blocking the FastAPI event loop.
+"""
 
 from __future__ import annotations
 
@@ -9,33 +14,47 @@ from typing import Any
 
 from .config import settings
 
-# Dedicated thread pool for workspace git operations (avoid blocking main thread).
+# Dedicated pool for git subprocess calls.
 _WS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="workspace")
 
 
-def _workspace_root() -> Path:
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+
+def _root() -> Path:
+    """Resolved absolute workspace root (computed once per call — Path is cheap)."""
     return Path(settings.workspace_root).resolve()
 
 
 def _resolve(repo_path: str, *parts: str) -> Path:
-    """Resolve path under workspace root. Disallow escaping (..)."""
-    root = _workspace_root()
-    if repo_path:
-        base = (root / repo_path).resolve()
-    else:
-        base = root
-    for p in parts:
-        if p:
-            base = (base / p).resolve()
+    """Return an absolute path under the workspace root.
+
+    Resolves the root once, then joins parts with pure path arithmetic before
+    a single final ``resolve()`` call — avoids one filesystem stat per part.
+    Raises ``PermissionError`` on path-traversal attempts.
+    """
+    root = _root()
+    base: Path = (root / repo_path).resolve() if repo_path else root
+    for part in parts:
+        if part:
+            base = base / part  # pure join, no stat
+    resolved = base.resolve()
     try:
-        base.relative_to(root)
+        resolved.relative_to(root)
     except ValueError:
         raise PermissionError(f"Path must be under workspace root: {root}")
-    return base
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# File I/O
+# ---------------------------------------------------------------------------
 
 
 def read_file(repo_path: str, path: str) -> str:
-    """Read a file from the local workspace. repo_path: subdir of workspace or '' for root."""
+    """Read *path* (relative to *repo_path*) from the local workspace."""
     full = _resolve(repo_path, path)
     if not full.is_file():
         raise FileNotFoundError(f"Not a file: {path}")
@@ -43,7 +62,7 @@ def read_file(repo_path: str, path: str) -> str:
 
 
 def write_file(repo_path: str, path: str, content: str) -> dict[str, Any]:
-    """Write content to a file. Creates parent dirs. Best practice: preserve style and add tests if needed."""
+    """Write *content* to *path*, creating parent directories as needed."""
     full = _resolve(repo_path, path)
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_text(content, encoding="utf-8")
@@ -51,33 +70,46 @@ def write_file(repo_path: str, path: str, content: str) -> dict[str, Any]:
 
 
 def list_dir(repo_path: str, subdir: str = "") -> list[dict[str, Any]]:
-    """List files and dirs under repo_path/subdir. Entries have name, type (file|dir)."""
+    """List files and directories under *repo_path/subdir*.
+
+    Hidden entries (dot-files) are omitted except ``.git``.
+    """
     full = _resolve(repo_path, subdir)
     if not full.is_dir():
         raise NotADirectoryError(f"Not a directory: {subdir or repo_path or '.'}")
-    result: list[dict[str, Any]] = []
-    for p in sorted(full.iterdir()):
-        if p.name.startswith(".") and p.name != ".git":
-            continue
-        result.append({"name": p.name, "type": "dir" if p.is_dir() else "file"})
-    return result
+    return [
+        {"name": p.name, "type": "dir" if p.is_dir() else "file"}
+        for p in sorted(full.iterdir())
+        if not p.name.startswith(".") or p.name == ".git"
+    ]
 
 
-def _git(repo_path: str, *args: str, capture: bool = True) -> str:
+# ---------------------------------------------------------------------------
+# Git helpers
+# ---------------------------------------------------------------------------
+
+
+def _git(repo_path: str, *args: str) -> str:
+    """Run a git command inside the workspace directory.
+
+    Executes in the thread pool so it never blocks the event loop.
+    Returns stdout as a string, or raises ``RuntimeError`` on non-zero exit.
+    """
     def _run() -> str:
-        root = _resolve(repo_path) if repo_path else _workspace_root()
+        root = _resolve(repo_path) if repo_path else _root()
         if not (root / ".git").exists():
             raise RuntimeError(f"Not a git repository: {root}")
-        cmd = ["git", "-C", str(root)] + list(args)
-        r = subprocess.run(
-            cmd,
-            capture_output=capture,
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
             text=True,
             timeout=60,
         )
-        if r.returncode != 0 and capture:
-            raise RuntimeError(f"git {' '.join(args)}: {r.stderr or r.stdout or 'failed'}")
-        return (r.stdout or "").strip() if capture else ""
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git {' '.join(args)}: {result.stderr or result.stdout or 'failed'}"
+            )
+        return (result.stdout or "").strip()
 
     future = _WS_EXECUTOR.submit(_run)
     try:
@@ -87,45 +119,42 @@ def _git(repo_path: str, *args: str, capture: bool = True) -> str:
 
 
 def git_status(repo_path: str = "") -> str:
-    """Return git status (short) and diff stat for the workspace."""
-    out = _git(repo_path, "status", "--short")
+    """Return short git status and diff stat for the workspace."""
+    status = _git(repo_path, "status", "--short")
     diff = _git(repo_path, "diff", "--stat")
-    if diff:
-        out += "\n\n" + diff
-    return out or "Clean working tree."
+    return "\n\n".join(filter(None, [status, diff])) or "Clean working tree."
 
 
 def git_add(repo_path: str, paths: list[str]) -> dict[str, Any]:
-    """Stage paths. Use ['.'] for all."""
-    root = _resolve(repo_path) if repo_path else _workspace_root()
+    """Stage *paths*.  Pass ``['.']`` to stage everything."""
     for p in paths:
-        _resolve(repo_path, p)  # validate
+        _resolve(repo_path, p)  # path-traversal guard
     _git(repo_path, "add", "--", *paths)
     return {"staged": paths}
 
 
 def git_commit(repo_path: str, message: str) -> dict[str, Any]:
-    """Commit staged changes. Message should be clear and conventional (e.g. fix: ..., feat: ...)."""
-    out = _git(repo_path, "commit", "-m", message)
-    return {"message": message, "output": out}
+    """Commit staged changes with *message* (use conventional style: fix:, feat:, …)."""
+    output = _git(repo_path, "commit", "-m", message)
+    return {"message": message, "output": output}
 
 
 def git_push(repo_path: str, remote: str = "origin", branch: str | None = None) -> dict[str, Any]:
-    """Push to remote. If branch omitted, push current branch."""
+    """Push to *remote*.  Uses the current branch when *branch* is omitted."""
     args = ["push", remote]
     if branch:
         args.append(branch)
-    out = _git(repo_path, *args)
-    return {"remote": remote, "branch": branch, "output": out}
+    output = _git(repo_path, *args)
+    return {"remote": remote, "branch": branch, "output": output}
 
 
 def git_current_branch(repo_path: str = "") -> str:
-    """Return current branch name."""
+    """Return the current branch name (``HEAD`` if detached)."""
     return _git(repo_path, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
 
 
 def git_remote_url(repo_path: str = "", remote: str = "origin") -> str:
-    """Return the URL of the given remote (e.g. https://github.com/owner/repo.git or git@github.com:owner/repo.git). Empty if not a git repo or remote missing."""
+    """Return the URL for *remote*, or an empty string if not found."""
     try:
         return _git(repo_path, "remote", "get-url", remote)
     except RuntimeError:

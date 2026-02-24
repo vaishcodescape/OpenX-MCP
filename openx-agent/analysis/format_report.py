@@ -1,33 +1,36 @@
-"""Format repository analysis as readable text with markdown-style code blocks for display/coloring."""
+"""Format a repository analysis result as readable, markdown-enriched text.
+
+Each finding is rendered with a code snippet pulled directly from the source
+file so the output is immediately actionable without needing to open an editor.
+"""
 
 from __future__ import annotations
 
 import os
 
-
 _EXT_TO_LANG: dict[str, str] = {
-    ".py": "python",
-    ".rs": "rust",
-    ".ts": "typescript",
+    ".py":  "python",
+    ".rs":  "rust",
+    ".ts":  "typescript",
     ".tsx": "tsx",
-    ".js": "javascript",
+    ".js":  "javascript",
     ".jsx": "jsx",
-    ".go": "go",
-    ".java": "java",
-    ".rb": "ruby",
-    ".cs": "csharp",
+    ".go":  "go",
+    ".java":"java",
+    ".rb":  "ruby",
+    ".cs":  "csharp",
     ".cpp": "cpp",
-    ".c": "c",
-    ".h": "c",
+    ".c":   "c",
+    ".h":   "c",
     ".hpp": "cpp",
 }
 
 
 def _read_line(path: str, line_num: int) -> str | None:
-    """Return the content of the given 1-based line number, or None."""
+    """Return the content of 1-based *line_num* in *path*, or ``None``."""
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for i, line in enumerate(f, start=1):
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for i, line in enumerate(fh, start=1):
                 if i == line_num:
                     return line.rstrip()
                 if i > line_num:
@@ -38,11 +41,10 @@ def _read_line(path: str, line_num: int) -> str | None:
 
 
 def _lang(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    return _EXT_TO_LANG.get(ext, "text")
+    return _EXT_TO_LANG.get(os.path.splitext(path)[1].lower(), "text")
 
 
-def _format_finding(root: str, item: dict, include_snippet: bool = True) -> str:
+def _format_finding(root: str, item: dict, include_snippet: bool = True) -> str:  # noqa: ARG001
     filepath = item.get("file", "")
     line = item.get("line", 0)
     message = item.get("message", "")
@@ -50,8 +52,7 @@ def _format_finding(root: str, item: dict, include_snippet: bool = True) -> str:
     if include_snippet and filepath and line:
         content = _read_line(filepath, int(line))
         if content:
-            lang = _lang(filepath)
-            parts.append(f"  ```{lang}\n  {content}\n  ```")
+            parts.append(f"  ```{_lang(filepath)}\n  {content}\n  ```")
     return "\n".join(parts)
 
 
@@ -61,64 +62,68 @@ def format_analysis_report(
     architecture: dict,
     ai_result: dict,
 ) -> str:
-    """Produce a single text report with sections and markdown code blocks (for LLM/colored display)."""
-    lines: list[str] = []
+    """Render a full analysis report as a markdown string.
 
-    # ---- Architecture ----
-    lines.append("## Architecture")
-    lines.append("")
-    arch = architecture
-    lines.append(f"- **Top-level dirs:** {', '.join(arch.get('top_level_dirs', []) or ['(none)'])}")
-    lines.append(f"- **Code files:** {arch.get('code_file_count', 0)}")
-    lines.append(f"- **Total lines:** {arch.get('total_loc', 0)}")
-    lang_break = arch.get("language_breakdown") or {}
+    Sections: Architecture → Static findings → AI analysis.
+    """
+    sections: list[str] = []
+
+    # ── Architecture ──────────────────────────────────────────────────────────
+    arch_lines = ["## Architecture", ""]
+    arch_lines.append(
+        f"- **Top-level dirs:** {', '.join(architecture.get('top_level_dirs', []) or ['(none)'])}"
+    )
+    arch_lines.append(f"- **Code files:** {architecture.get('code_file_count', 0)}")
+    arch_lines.append(f"- **Total lines:** {architecture.get('total_loc', 0)}")
+
+    lang_break = architecture.get("language_breakdown") or {}
     if lang_break:
-        lines.append(f"- **Languages:** {', '.join(f'{k} ({v})' for k, v in sorted(lang_break.items()))}")
-    frameworks = arch.get("frameworks") or []
+        arch_lines.append(
+            f"- **Languages:** {', '.join(f'{k} ({v})' for k, v in sorted(lang_break.items()))}"
+        )
+    frameworks = architecture.get("frameworks") or []
     if frameworks:
-        lines.append(f"- **Frameworks detected:** {', '.join(frameworks)}")
-    risks = arch.get("risks") or []
-    if risks:
-        lines.append("- **Risks:**")
-        for r in risks:
-            lines.append(f"  - {r}")
-    notes = arch.get("architecture_notes") or []
-    for note in notes:
-        lines.append(f"- {note}")
-    lines.append("")
+        arch_lines.append(f"- **Frameworks detected:** {', '.join(frameworks)}")
 
-    # ---- Static findings ----
-    lines.append("## Static findings")
-    lines.append("")
+    risks = architecture.get("risks") or []
+    if risks:
+        arch_lines.append("- **Risks:**")
+        arch_lines.extend(f"  - {r}" for r in risks)
+
+    for note in (architecture.get("architecture_notes") or []):
+        arch_lines.append(f"- {note}")
+
+    sections.append("\n".join(arch_lines))
+
+    # ── Static findings ───────────────────────────────────────────────────────
+    finding_lines = ["## Static findings", ""]
     if not static_findings:
-        lines.append("No issues found.")
+        finding_lines.append("No issues found.")
     else:
         for category, items in static_findings.items():
             if category.endswith("_total"):
                 continue
-            title = category.replace("_", " ").title()
-            lines.append(f"### {title}")
-            lines.append("")
-            item_list = items or []
-            for i, item in enumerate(item_list[:15]):  # cap for readability
-                lines.append(_format_finding(root, item))
-                lines.append("")
-            if len(item_list) > 15:
-                lines.append(f"  _… and {len(item_list) - 15} more._")
-                lines.append("")
-    lines.append("")
+            finding_lines.append(f"### {category.replace('_', ' ').title()}")
+            finding_lines.append("")
+            capped = (items or [])[:15]
+            for item in capped:
+                finding_lines.append(_format_finding(root, item))
+                finding_lines.append("")
+            if len(items or []) > 15:
+                finding_lines.append(f"  _… and {len(items) - 15} more._")
+                finding_lines.append("")
 
-    # ---- AI analysis ----
-    lines.append("## AI analysis")
-    lines.append("")
-    ai_message = ai_result.get("message", "") if isinstance(ai_result, dict) else ""
-    if not ai_message:
-        if ai_result.get("enabled") is False:
-            ai_message = ai_result.get("message", "AI analysis not run (e.g. no API key).")
-        else:
-            ai_message = "No AI summary returned."
-    # Ensure the AI message is plain text; if it contains code, it's already in natural language.
-    lines.append(ai_message.strip())
-    lines.append("")
+    sections.append("\n".join(finding_lines))
 
-    return "\n".join(lines).strip()
+    # ── AI analysis ───────────────────────────────────────────────────────────
+    ai_message = (
+        (ai_result.get("message") if isinstance(ai_result, dict) else "")
+        or (
+            ai_result.get("message", "AI analysis not run (no API key).")
+            if isinstance(ai_result, dict) and ai_result.get("enabled") is False
+            else "No AI summary returned."
+        )
+    )
+    sections.append("\n".join(["## AI analysis", "", ai_message.strip()]))
+
+    return "\n\n".join(sections).strip()

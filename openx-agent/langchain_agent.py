@@ -71,6 +71,11 @@ def _wrap_mcp_tool(name: str, description: str, input_schema: dict) -> Structure
             result = call_tool(name, kwargs)
             return format_tool_result(result)
         except Exception as exc:
+            err = str(exc)
+            if "GITHUB_TOKEN" in err and ("required" in err.lower() or "not set" in err.lower()):
+                return "GITHUB_TOKEN is not set. Add it to .env for GitHub operations (repos, PRs, issues, workflows, CI)."
+            if "ANTHROPIC_API_KEY" in err:
+                return "ANTHROPIC_API_KEY is not set. Add it to .env for the Claude model."
             return f"Error calling {name}: {exc}"
 
     param_hints = []
@@ -437,10 +442,19 @@ def _get_codebase_context() -> str:
 
 _MEMORIES: dict[str, list[tuple[str, str]]] = {}
 _MEMORY_WINDOW = 8
+# Maximum number of distinct conversation IDs to hold in memory.
+# Oldest conversation is evicted once this limit is reached.
+_MAX_CONVERSATIONS = 200
 
 
 def _get_history(cid: str) -> list[tuple[str, str]]:
-    return _MEMORIES.setdefault(cid, [])
+    if cid not in _MEMORIES:
+        # Evict the oldest conversation if we're at the cap.
+        if len(_MEMORIES) >= _MAX_CONVERSATIONS:
+            oldest = next(iter(_MEMORIES))
+            del _MEMORIES[oldest]
+        _MEMORIES[cid] = []
+    return _MEMORIES[cid]
 
 
 def _trim_history(cid: str) -> None:
@@ -461,12 +475,16 @@ def _call_llm(messages: list[dict[str, str]]) -> str:
     llm = get_llm()
     last_exc: Exception | None = None
 
+    # Build the LangChain message list once — no need to rebuild on each retry.
+    lc_messages = [
+        HumanMessage(content=m["content"]) if m["role"] == "user"
+        else AIMessage(content=m["content"])
+        for m in messages
+    ]
+
     for attempt in range(_MAX_RETRIES):
         try:
-            result = llm.invoke(
-                [HumanMessage(content=m["content"]) if m["role"] == "user"
-                 else AIMessage(content=m["content"]) for m in messages]
-            )
+            result = llm.invoke(lc_messages)
             content = (result.content or "").strip() if hasattr(result, "content") else ""
             if content:
                 return content

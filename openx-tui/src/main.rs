@@ -1,4 +1,4 @@
-//! OpenX TUI — terminal lifecycle and event loop.
+//! Terminal lifecycle, event loop, and cleanup for the OpenX TUI.
 
 mod actions;
 mod app;
@@ -26,32 +26,33 @@ use backend::BackendClient;
 use events::{key_to_action, TICK_RATE};
 
 fn main() -> Result<()> {
+    // Initialise structured logging (RUST_LOG controls the filter).
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("openx_tui=info".parse()?))
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("openx_tui=info".parse()?),
+        )
         .with_target(false)
         .init();
 
     let base_url =
-        std::env::var("OPENX_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
-    let client = BackendClient::new(base_url);
+        std::env::var("OPENX_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".into());
 
-    enable_raw_mode().map_err(anyhow::Error::msg)?;
+    // Set up the terminal in raw / alternate-screen mode.
+    enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, DisableMouseCapture).map_err(anyhow::Error::msg)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).map_err(anyhow::Error::msg)?;
+    execute!(stdout, EnterAlternateScreen, DisableMouseCapture)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    terminal.show_cursor()?;
 
-    let mut app = App::new(client);
+    let mut app = App::new(BackendClient::new(base_url));
     app.bootstrap();
-
-    // Ensure cursor is visible for input (some terminals hide it in raw mode).
-    let _ = terminal.show_cursor();
 
     let result = run_loop(&mut terminal, &mut app);
 
-    disable_raw_mode().map_err(anyhow::Error::msg)?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).map_err(anyhow::Error::msg)?;
-    terminal.show_cursor().map_err(anyhow::Error::msg)?;
+    // Always restore the terminal, even on error.
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
 
     result
 }
@@ -62,24 +63,22 @@ fn run_loop(
 ) -> Result<()> {
     loop {
         app.tick = app.tick.wrapping_add(1);
-        // Pick up any completed background HTTP results.
         app.poll_results();
+
         if app.should_quit {
             return Ok(());
         }
-        let tick = app.tick;
-        terminal.draw(|f| ui::render(f, &*app, tick))?;
 
-        if event::poll(TICK_RATE).map_err(anyhow::Error::msg)? {
-            let ev = event::read().map_err(anyhow::Error::msg)?;
-            // Ignore mouse events so scroll wheel doesn't affect the app.
-            if let Event::Key(key) = ev {
-                let input_empty = app.state.input_buffer().is_empty();
+        let tick = app.tick;
+        terminal.draw(|frame| ui::render(frame, app, tick))?;
+
+        if event::poll(TICK_RATE)? {
+            if let Event::Key(key) = event::read()? {
                 let action = key_to_action(
                     &key,
                     app.state.palette.visible,
                     app.input_has_focus(),
-                    input_empty,
+                    app.state.input_buffer.is_empty(),
                 );
                 if let Some(a) = action {
                     app.dispatch(a);

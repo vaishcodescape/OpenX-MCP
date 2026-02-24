@@ -1,38 +1,29 @@
-//! Git helpers: branch name and unstaged diff.
+//! Git helpers: current branch name and unstaged diff preview.
 
 use std::process::Command;
 
-#[allow(dead_code)]
+/// Return the current git branch name, or a fallback string on error.
 pub fn git_branch() -> String {
-    let out = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() {
-                "detached".into()
-            } else {
-                s
-            }
-        }
-        _ => "no-git".into(),
-    }
+    run_git(&["rev-parse", "--abbrev-ref", "HEAD"])
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "no-git".into())
 }
 
+/// Return up to `max_lines` lines of `git diff`, or `"No unstaged diff"`.
 #[allow(dead_code)]
 pub fn git_diff_preview(max_lines: usize) -> String {
-    let out = Command::new("git").args(["diff", "--"]).output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let lines: Vec<&str> = s.lines().take(max_lines).collect();
-            if lines.is_empty() {
-                "No unstaged diff".into()
-            } else {
-                lines.join("\n")
-            }
-        }
-        _ => "No unstaged diff".into(),
+    run_git(&["diff", "--"])
+        .filter(|s| !s.is_empty())
+        .map(|s| s.lines().take(max_lines).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_else(|| "No unstaged diff".into())
+}
+
+/// Run a git subcommand and return trimmed stdout, or `None` on failure.
+fn run_git(args: &[&str]) -> Option<String> {
+    let out = Command::new("git").args(args).output().ok()?;
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        None
     }
 }

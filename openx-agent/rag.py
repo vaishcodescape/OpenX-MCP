@@ -1,12 +1,15 @@
 """RAG pipeline — fetch GitHub data, embed, store in FAISS, retrieve."""
 
 from __future__ import annotations
- 
+
+import base64
 import logging
 import os
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import FAISSdfhjfgfgttrtgtrfrftggrft
 from langchain_core.documents import Document
 from langchain_core.tools import tool
 
@@ -21,8 +24,9 @@ from .llm import get_embeddings
 
 logger = logging.getLogger(__name__)
 
-# In-memory cache of per-repo FAISS stores.
-_STORES: dict[str, FAISS] = {}
+# In-memory cache of per-repo FAISS stores (LRU-bounded).
+_MAX_STORES = 20
+_STORES: OrderedDict[str, FAISS] = OrderedDict()
 
 # Disk cache directory.
 _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".openx_cache", "faiss")
@@ -98,8 +102,6 @@ def _load_readme(repo_full_name: str) -> list[Document]:
     try:
         repo = get_repo(repo_full_name)
         readme = repo.get_readme()
-        import base64
-
         content = base64.b64decode(readme.content).decode("utf-8", errors="replace")
         # Truncate very long READMEs.
         if len(content) > 8_000:
@@ -189,13 +191,24 @@ def index_repo(repo_full_name: str) -> dict[str, Any]:
     logger.info("Indexing repo: %s", repo_full_name)
     set_progress(op, "fetch", "Fetching repo metadata and content...", {"repo": repo_full_name})
 
+    # Run all I/O-bound loaders concurrently.
+    loaders = [
+        (_load_repo_metadata, repo_full_name),
+        (_load_pull_requests, repo_full_name),
+        (_load_readme, repo_full_name),
+        (_load_workflows, repo_full_name),
+        (_load_repo_listing,),
+    ]
     docs: list[Document] = []
-    docs.extend(_load_repo_metadata(repo_full_name))
-    docs.extend(_load_pull_requests(repo_full_name))
-    set_progress(op, "fetch", f"Loaded {len(docs)} docs, loading README and workflows...", {"repo": repo_full_name})
-    docs.extend(_load_readme(repo_full_name))
-    docs.extend(_load_workflows(repo_full_name))
-    docs.extend(_load_repo_listing())
+    with ThreadPoolExecutor(max_workers=5, thread_name_prefix="rag_loader") as pool:
+        futures = [pool.submit(fn, *args) for fn, *args in loaders]
+        for future in as_completed(futures):
+            try:
+                docs.extend(future.result())
+            except Exception:
+                logger.exception("Document loader raised an exception")
+
+    set_progress(op, "fetch", f"Loaded {len(docs)} docs, building index...", {"repo": repo_full_name})
 
     if not docs:
         clear_progress(op)
@@ -204,7 +217,12 @@ def index_repo(repo_full_name: str) -> dict[str, Any]:
     set_progress(op, "embed", "Building embeddings and FAISS index...", {"document_count": len(docs)})
     embeddings = get_embeddings()
     store = FAISS.from_documents(docs, embeddings)
+
+    # LRU eviction: drop the oldest store when at capacity.
+    if len(_STORES) >= _MAX_STORES:
+        _STORES.popitem(last=False)
     _STORES[repo_full_name] = store
+    _STORES.move_to_end(repo_full_name)  # mark as most recently used
 
     set_progress(op, "save", "Saving index to disk...", {})
     os.makedirs(_CACHE_DIR, exist_ok=True)
@@ -221,8 +239,9 @@ def index_repo(repo_full_name: str) -> dict[str, Any]:
 
 
 def _get_store(repo_full_name: str) -> FAISS | None:
-    """Get the FAISS store for a repo, loading from disk if needed."""
+    """Get the FAISS store for a repo, loading from disk if needed (LRU touch on hit)."""
     if repo_full_name in _STORES:
+        _STORES.move_to_end(repo_full_name)  # mark as recently used
         return _STORES[repo_full_name]
 
     store_path = os.path.join(_CACHE_DIR, repo_full_name.replace("/", "_"))
@@ -233,6 +252,8 @@ def _get_store(repo_full_name: str) -> FAISS | None:
             embeddings,
             allow_dangerous_deserialization=True,
         )
+        if len(_STORES) >= _MAX_STORES:
+            _STORES.popitem(last=False)
         _STORES[repo_full_name] = store
         return store
 

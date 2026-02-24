@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable, TypeVar
 
@@ -22,17 +23,37 @@ _GH_TIMEOUT = 30
 _EXECUTOR = ThreadPoolExecutor(max_workers=10, thread_name_prefix="gh_cli")
 
 
+# ---------------------------------------------------------------------------
+# Cached env dict — avoid copying all of os.environ on every subprocess call.
+# We cache on the (token, base_url) pair so a config change invalidates it.
+# ---------------------------------------------------------------------------
+
+_gh_env_cache: dict[str, str] | None = None
+_gh_env_cache_key: tuple[str | None, str | None] = (None, None)
+_gh_env_lock = threading.Lock()
+
+
 def _gh_env() -> dict[str, str]:
-    env = {**os.environ}
-    if settings.github_token:
-        env["GH_TOKEN"] = settings.github_token
-    if settings.github_base_url:
-        # gh uses GH_HOST for API host (e.g. github.company.com).
-        from urllib.parse import urlparse
-        parsed = urlparse(settings.github_base_url)
-        if parsed.hostname:
-            env["GH_HOST"] = parsed.hostname
-    return env
+    global _gh_env_cache, _gh_env_cache_key
+    key = (settings.github_token, settings.github_base_url)
+    # Fast path: no lock needed for a cache hit on an immutable key.
+    if _gh_env_cache is not None and _gh_env_cache_key == key:
+        return _gh_env_cache
+    with _gh_env_lock:
+        # Re-check inside lock in case another thread beat us here.
+        if _gh_env_cache is not None and _gh_env_cache_key == key:
+            return _gh_env_cache
+        env = {**os.environ}
+        if settings.github_token:
+            env["GH_TOKEN"] = settings.github_token
+        if settings.github_base_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(settings.github_base_url)
+            if parsed.hostname:
+                env["GH_HOST"] = parsed.hostname
+        _gh_env_cache = env
+        _gh_env_cache_key = key
+    return _gh_env_cache
 
 
 def _run_gh(*args: str, timeout: int = _GH_TIMEOUT) -> str | None:
@@ -55,28 +76,34 @@ def _run_gh(*args: str, timeout: int = _GH_TIMEOUT) -> str | None:
 
 
 _gh_available: bool | None = None
+_gh_available_lock = threading.Lock()
 
 
 def available() -> bool:
     """Return True if gh is installed and authenticated (and we have a token)."""
     global _gh_available
+    # Fast path: already resolved, no lock needed.
     if _gh_available is not None:
         return _gh_available
     if not settings.github_token:
         _gh_available = False
         return False
-    try:
-        r = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env=_gh_env(),
-        )
-        out = (r.stdout or "") + (r.stderr or "")
-        _gh_available = r.returncode == 0 and ("Logged in" in out or "logged in" in out)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        _gh_available = False
+    with _gh_available_lock:
+        # Re-check inside lock in case another thread just set it.
+        if _gh_available is not None:
+            return _gh_available
+        try:
+            r = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=_gh_env(),
+            )
+            out = (r.stdout or "") + (r.stderr or "")
+            _gh_available = r.returncode == 0 and ("Logged in" in out or "logged in" in out)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            _gh_available = False
     return _gh_available or False
 
 

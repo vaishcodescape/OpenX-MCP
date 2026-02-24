@@ -210,30 +210,7 @@ def _merge_pr(params: dict[str, Any]) -> Any:
     return merge_pr(params["repo_full_name"], params["number"], params.get("method", "merge"))
 
 
-@_tool(
-    name="github.create_pull",
-    description="Create a new pull request in a repository",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "title": {"type": "string"},
-            "head": {"type": "string", "description": "Branch to merge into base"},
-            "base": {"type": "string", "description": "Target branch (e.g. main)"},
-            "body": {"type": "string"},
-        },
-        "required": ["repo_full_name", "title", "head"],
-    },
-)
-def _create_pull(params: dict[str, Any]) -> Any:
-    return create_pull(
-        params["repo_full_name"],
-        params["title"],
-        params["head"],
-        params.get("base", "main"),
-        params.get("body", ""),
-    )
-
+# Note: github.create_pr is the canonical "create PR" tool; github.create_pull was removed to avoid duplicate.
 
 @_tool(
     name="github.get_readme",
