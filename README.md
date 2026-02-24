@@ -41,8 +41,8 @@
 - **LangChain** — ReAct agent framework with structured tool calling
 - **FastAPI** — RESTful MCP server with JSON-RPC endpoints
 
-### AI / Machine Learning
-- **Large Language Models (LLM)** — Meta Llama 3.1 (8B/70B) via Hugging Face Inference API
+### Agentic AI
+- **Large Language Models (LLM)** — Anthropic  Claude Opus API
 - **ReAct Prompting** — Autonomous multi-step reasoning with tool-use and observation loops
 - **Retrieval-Augmented Generation (RAG)** — Indexed repository knowledge base for context-aware AI responses
 - **Prompt Engineering** — Compact, optimized system prompts for fast inference and accurate tool selection
