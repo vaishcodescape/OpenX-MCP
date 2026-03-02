@@ -5,10 +5,10 @@ Endpoints
 GET  /health       — liveness probe.
 GET  /progress     — long-running operation status (heal_ci, index).
 GET  /tools        — MCP tool list for the command palette.
-POST /mcp          — raw MCP protocol (tools/list, tools/call).
 POST /chat         — LangChain ReAct agent conversation.
 POST /run          — same as /chat, legacy format (output + should_continue).
 POST /index        — index a GitHub repo into the RAG knowledge base.
+/mcp/*             — native MCP protocol (FastMCP, Streamable HTTP).
 """
 
 from __future__ import annotations
@@ -16,9 +16,15 @@ from __future__ import annotations
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from .mcp import MCPRequest, MCPResponse, call_tool, list_tools
+from .mcp import mcp as mcp_server, list_tools
 
-app = FastAPI(title="OpenX", version="1.0")
+# Create the FastMCP ASGI sub-app (path="/" because FastAPI mounts it at /mcp).
+_mcp_app = mcp_server.http_app(path="/")
+
+app = FastAPI(title="OpenX", version="1.0", lifespan=_mcp_app.lifespan)
+
+# Mount the native MCP protocol at /mcp.
+app.mount("/mcp", _mcp_app)
 
 # Stable conversation ID for /run callers (separate from TUI sessions).
 _RUN_CONVERSATION_ID = "run-default"
@@ -67,27 +73,6 @@ async def progress(operation: str | None = None) -> dict:
 async def tools() -> list:
     """Return the registered MCP tool list for the command palette."""
     return list_tools()
-
-
-@app.post("/mcp")
-async def mcp(request: MCPRequest) -> MCPResponse:
-    """Handle raw MCP protocol messages (tools/list and tools/call)."""
-    try:
-        if request.method == "tools/list":
-            return MCPResponse(id=request.id, result=list_tools())
-
-        if request.method == "tools/call":
-            params = request.params or {}
-            name = params.get("name")
-            if not name:
-                raise ValueError("Missing tool name")
-            result = call_tool(name, params.get("arguments") or {})
-            return MCPResponse(id=request.id, result=result)
-
-        raise ValueError(f"Unknown MCP method: {request.method!r}")
-
-    except Exception as exc:
-        return MCPResponse(id=request.id, error={"message": str(exc)})
 
 
 @app.post("/chat")

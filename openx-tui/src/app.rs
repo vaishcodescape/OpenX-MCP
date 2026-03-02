@@ -152,8 +152,15 @@ impl App {
                 let cursor = self.state.input_cursor;
                 let min_cursor = if self.state.palette.visible { 1 } else { 0 };
                 if cursor > min_cursor {
-                    self.state.input_buffer.remove(cursor - 1);
-                    self.state.input_cursor -= 1;
+                    let prev = self.state.input_buffer[..cursor]
+                        .char_indices()
+                        .next_back()
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(0);
+                    if prev >= min_cursor {
+                        self.state.input_buffer.remove(prev);
+                        self.state.input_cursor = prev;
+                    }
                     if self.state.palette.visible {
                         self.sync_palette_query();
                     }

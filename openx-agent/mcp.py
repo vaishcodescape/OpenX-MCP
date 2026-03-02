@@ -1,8 +1,19 @@
+"""MCP server — FastMCP-based tool registry with backward-compatible API.
+
+Tools are registered via FastMCP ``@mcp.tool`` for native MCP protocol support
+(stdio, HTTP/SSE) and simultaneously stored in a lightweight compat layer so
+that ``langchain_agent``, ``command_router``, and ``main`` can keep using
+``TOOLS``, ``call_tool()``, and ``list_tools()`` unchanged.
+"""
+
 from __future__ import annotations
 
-from typing import Any, Callable
+import inspect
+import types
+from dataclasses import dataclass, field
+from typing import Any, Callable, get_type_hints
 
-from pydantic import BaseModel, Field
+from fastmcp import FastMCP
 
 from .analysis.ai_analysis import analyze_with_ai
 from .analysis.architecture import summarize_architecture
@@ -49,122 +60,157 @@ from .github_client import (
     update_readme as gh_update_readme,
 )
 
+# ---------------------------------------------------------------------------
+# FastMCP server instance
+# ---------------------------------------------------------------------------
 
-class MCPRequest(BaseModel):
-    id: str | int | None = None
-    method: str
-    params: dict[str, Any] | None = None
+mcp = FastMCP("OpenX")
 
-
-class MCPResponse(BaseModel):
-    id: str | int | None = None
-    result: Any | None = None
-    error: dict[str, Any] | None = None
+# ---------------------------------------------------------------------------
+# Backward-compat layer (consumed by langchain_agent / command_router / main)
+# ---------------------------------------------------------------------------
 
 
-class Tool(BaseModel):
+@dataclass
+class ToolCompat:
+    """Minimal mirror of the old ``Tool`` Pydantic model so existing consumers
+    can keep reading ``.name``, ``.description``, and ``.input_schema``."""
+
     name: str
     description: str
-    input_schema: dict[str, Any] = Field(default_factory=dict)
-    handler: Callable[[dict[str, Any]], Any]
-
-    class Config:
-        arbitrary_types_allowed = True
+    input_schema: dict[str, Any] = field(default_factory=dict)
 
 
-def _tool(name: str, description: str, input_schema: dict[str, Any]):
-    def decorator(func: Callable[[dict[str, Any]], Any]):
-        return Tool(name=name, description=description, input_schema=input_schema, handler=func)
+TOOLS: dict[str, ToolCompat] = {}
+_HANDLERS: dict[str, Callable[..., Any]] = {}
+
+
+def _py_to_json_type(tp: Any) -> str:
+    """Map a Python type annotation to its JSON-Schema string."""
+    if tp is int:
+        return "integer"
+    if tp is float:
+        return "number"
+    if tp is bool:
+        return "boolean"
+    if tp is str:
+        return "string"
+    origin = getattr(tp, "__origin__", None)
+    if tp is list or origin is list:
+        return "array"
+    if tp is dict or origin is dict:
+        return "object"
+    # Union / Optional — pick the first non-None branch.
+    if origin is types.UnionType or origin is type(int | str):
+        args = [a for a in tp.__args__ if a is not type(None)]
+        return _py_to_json_type(args[0]) if args else "string"
+    return "string"
+
+
+def _schema_from_sig(
+    func: Callable[..., Any],
+    param_descs: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build a JSON-Schema-like dict from *func*'s signature + type hints."""
+    sig = inspect.signature(func)
+    try:
+        hints = get_type_hints(func)
+    except Exception:
+        hints = {}
+
+    descs = param_descs or {}
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+
+    for pname, param in sig.parameters.items():
+        tp = hints.get(pname)
+        entry: dict[str, Any] = {"type": _py_to_json_type(tp) if tp else "string"}
+        if pname in descs:
+            entry["description"] = descs[pname]
+        properties[pname] = entry
+        if param.default is inspect.Parameter.empty:
+            required.append(pname)
+
+    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _tool(dotted_name: str, param_descs: dict[str, str] | None = None):
+    """Register *func* with both FastMCP and the backward-compat ``TOOLS`` dict."""
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        mcp.tool(name=dotted_name)(func)
+
+        schema = _schema_from_sig(func, param_descs)
+        doc = (inspect.getdoc(func) or "").strip()
+        TOOLS[dotted_name] = ToolCompat(
+            name=dotted_name, description=doc, input_schema=schema,
+        )
+        _HANDLERS[dotted_name] = func
+        return func
+
     return decorator
 
 
-TOOLS: dict[str, Tool] = {}
+# ---------------------------------------------------------------------------
+# GitHub — repos & PRs
+# ---------------------------------------------------------------------------
 
 
-def register(tool: Tool) -> None:
-    TOOLS[tool.name] = tool
-
-
-@_tool(
-    name="github.list_repos",
-    description="List repositories for the authenticated user or an org",
-    input_schema={"type": "object", "properties": {"org": {"type": "string"}}},
-)
-
-def _list_repos(params: dict[str, Any]) -> Any:
-    return list_repos(params.get("org"))
+@_tool("github.list_repos")
+def _list_repos(org: str | None = None) -> Any:
+    """List repositories for the authenticated user or an org"""
+    return list_repos(org)
 
 
 @_tool(
-    name="github.list_prs",
-    description="List open pull requests in a repository. Use repo_full_name or leave empty to use OPENX_ACTIVE_REPO.",
-    input_schema={
-        "type": "object",
-        "properties": {"repo_full_name": {"type": "string", "description": "owner/repo; omit for active repo"}},
-    },
+    "github.list_prs",
+    param_descs={"repo_full_name": "owner/repo; omit for active repo"},
 )
-
-def _list_prs(params: dict[str, Any]) -> Any:
-    repo = resolve_repo(params.get("repo_full_name") or "")
+def _list_prs(repo_full_name: str = "") -> Any:
+    """List open pull requests in a repository. Use repo_full_name or leave empty to use OPENX_ACTIVE_REPO."""
+    repo = resolve_repo(repo_full_name or "")
     return list_open_prs(repo)
 
 
-@_tool(
-    name="github.get_pr",
-    description="Get a pull request by number (details, files changed, diff, CI checks).",
-    input_schema={
-        "type": "object",
-        "properties": {"repo_full_name": {"type": "string"}, "number": {"type": "integer"}},
-        "required": ["number"],
-    },
-)
-
-def _get_pr(params: dict[str, Any]) -> Any:
-    repo = resolve_repo(params.get("repo_full_name") or "")
-    return get_pr(repo, params["number"])
+@_tool("github.get_pr")
+def _get_pr(number: int, repo_full_name: str = "") -> Any:
+    """Get a pull request by number (details, files changed, diff, CI checks)."""
+    repo = resolve_repo(repo_full_name or "")
+    return get_pr(repo, number)
 
 
 @_tool(
-    name="github.create_pr",
-    description="Create a pull request. head = source branch (the branch with your changes), base = target branch (e.g. main).",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string", "description": "owner/repo"},
-            "title": {"type": "string"},
-            "head": {"type": "string", "description": "Source branch name"},
-            "base": {"type": "string", "description": "Target branch (default main)"},
-            "body": {"type": "string", "description": "PR description"},
-        },
-        "required": ["repo_full_name", "title", "head"],
+    "github.create_pr",
+    param_descs={
+        "repo_full_name": "owner/repo",
+        "head": "Source branch name",
+        "base": "Target branch (default main)",
+        "body": "PR description",
     },
 )
-def _create_pr(params: dict[str, Any]) -> Any:
-    return create_pull(
-        params["repo_full_name"],
-        params["title"],
-        params["head"],
-        params.get("base", "main"),
-        params.get("body", ""),
-    )
+def _create_pr(
+    repo_full_name: str,
+    title: str,
+    head: str,
+    base: str = "main",
+    body: str = "",
+) -> Any:
+    """Create a pull request. head = source branch (the branch with your changes), base = target branch (e.g. main)."""
+    return create_pull(repo_full_name, title, head, base, body)
 
 
 @_tool(
-    name="github.run_gh_command",
-    description="Run a GitHub CLI (gh) command in the terminal. Use when the user asks to run gh, list PRs/issues via terminal, or run a specific gh subcommand. Example: 'pr list --repo owner/repo', 'issue list --repo owner/repo', 'run list --repo owner/repo'. Allowed subcommands: pr, issue, repo, run, workflow, api.",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "The gh command without the 'gh' prefix, e.g. 'pr list --repo owner/repo' or 'issue list --state open'",
-            },
-        },
-        "required": ["command"],
+    "github.run_gh_command",
+    param_descs={
+        "command": "The gh command without the 'gh' prefix, e.g. 'pr list --repo owner/repo'",
     },
 )
-def _run_gh_command(params: dict[str, Any]) -> Any:
-    cmd = (params.get("command") or "").strip()
+def _run_gh_command(command: str) -> Any:
+    """Run a GitHub CLI (gh) command in the terminal. Allowed subcommands: pr, issue, repo, run, workflow, api."""
+    cmd = (command or "").strip()
     if not cmd:
         return {"status": "error", "message": "command is required"}
     try:
@@ -174,514 +220,307 @@ def _run_gh_command(params: dict[str, Any]) -> Any:
         return {"status": "error", "message": str(e)}
 
 
-@_tool(
-    name="github.comment_pr",
-    description="Comment on a pull request",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "number": {"type": "integer"},
-            "body": {"type": "string"},
-        },
-        "required": ["repo_full_name", "number", "body"],
-    },
-)
-
-def _comment_pr(params: dict[str, Any]) -> Any:
-    return comment_pr(params["repo_full_name"], params["number"], params["body"])
+@_tool("github.comment_pr")
+def _comment_pr(repo_full_name: str, number: int, body: str) -> Any:
+    """Comment on a pull request"""
+    return comment_pr(repo_full_name, number, body)
 
 
-@_tool(
-    name="github.merge_pr",
-    description="Merge a pull request",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "number": {"type": "integer"},
-            "method": {"type": "string", "enum": ["merge", "squash", "rebase"]},
-        },
-        "required": ["repo_full_name", "number"],
-    },
-)
-
-def _merge_pr(params: dict[str, Any]) -> Any:
-    return merge_pr(params["repo_full_name"], params["number"], params.get("method", "merge"))
+@_tool("github.merge_pr")
+def _merge_pr(
+    repo_full_name: str,
+    number: int,
+    method: str = "merge",
+) -> Any:
+    """Merge a pull request"""
+    return merge_pr(repo_full_name, number, method)
 
 
-# Note: github.create_pr is the canonical "create PR" tool; github.create_pull was removed to avoid duplicate.
-
-@_tool(
-    name="github.get_readme",
-    description="Get README content for a repo (path, content, sha, html_url). ref = branch/tag or omit for default.",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "ref": {"type": "string", "description": "Branch, tag, or SHA; omit for default branch"},
-        },
-        "required": ["repo_full_name"],
-    },
-)
-def _get_readme(params: dict[str, Any]) -> Any:
-    return gh_get_readme(params["repo_full_name"], params.get("ref"))
+# ---------------------------------------------------------------------------
+# GitHub — README
+# ---------------------------------------------------------------------------
 
 
 @_tool(
-    name="github.update_readme",
-    description="Create or update README in the repo. Use to modify README content automatically.",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "content": {"type": "string", "description": "Full new README markdown content"},
-            "branch": {"type": "string", "description": "Target branch; omit for default"},
-            "message": {"type": "string", "description": "Commit message"},
-        },
-        "required": ["repo_full_name", "content"],
-    },
+    "github.get_readme",
+    param_descs={"ref": "Branch, tag, or SHA; omit for default branch"},
 )
-def _update_readme(params: dict[str, Any]) -> Any:
-    return gh_update_readme(
-        params["repo_full_name"],
-        params["content"],
-        params.get("branch"),
-        params.get("message", "docs: update README"),
-    )
-
-
-# --- GitHub Issues ---
+def _get_readme(repo_full_name: str, ref: str | None = None) -> Any:
+    """Get README content for a repo (path, content, sha, html_url). ref = branch/tag or omit for default."""
+    return gh_get_readme(repo_full_name, ref)
 
 
 @_tool(
-    name="github.list_issues",
-    description="List issues in a repository (state: open, closed, or all)",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "state": {"type": "string", "enum": ["open", "closed", "all"]},
-        },
-        "required": ["repo_full_name"],
+    "github.update_readme",
+    param_descs={
+        "content": "Full new README markdown content",
+        "branch": "Target branch; omit for default",
+        "message": "Commit message",
     },
 )
-def _list_issues(params: dict[str, Any]) -> Any:
-    return list_issues(params["repo_full_name"], params.get("state", "open"))
+def _update_readme(
+    repo_full_name: str,
+    content: str,
+    branch: str | None = None,
+    message: str = "docs: update README",
+) -> Any:
+    """Create or update README in the repo. Use to modify README content automatically."""
+    return gh_update_readme(repo_full_name, content, branch, message)
+
+
+# ---------------------------------------------------------------------------
+# GitHub — Issues
+# ---------------------------------------------------------------------------
+
+
+@_tool("github.list_issues")
+def _list_issues(repo_full_name: str, state: str = "open") -> Any:
+    """List issues in a repository (state: open, closed, or all)"""
+    return list_issues(repo_full_name, state)
+
+
+@_tool("github.get_issue")
+def _get_issue(repo_full_name: str, number: int) -> Any:
+    """Get a single issue by number"""
+    return get_issue(repo_full_name, number)
+
+
+@_tool("github.create_issue")
+def _create_issue_tool(
+    repo_full_name: str,
+    title: str,
+    body: str = "",
+    labels: list[str] | None = None,
+) -> Any:
+    """Create a new issue in a repository"""
+    return create_issue(repo_full_name, title, body, labels)
+
+
+@_tool("github.comment_issue")
+def _comment_issue(repo_full_name: str, number: int, body: str) -> Any:
+    """Add a comment to an issue or PR"""
+    return comment_issue(repo_full_name, number, body)
+
+
+@_tool("github.close_issue")
+def _close_issue(repo_full_name: str, number: int) -> Any:
+    """Close an issue"""
+    return close_issue(repo_full_name, number)
+
+
+# ---------------------------------------------------------------------------
+# GitHub — Workflows & CI
+# ---------------------------------------------------------------------------
+
+
+@_tool("github.list_workflows")
+def _list_workflows(repo_full_name: str) -> Any:
+    """List GitHub Actions workflows for a repo"""
+    return list_workflows(repo_full_name)
+
+
+@_tool("github.trigger_workflow")
+def _trigger_workflow(
+    repo_full_name: str,
+    workflow_id: int,
+    ref: str,
+    inputs: dict[str, Any] | None = None,
+) -> Any:
+    """Trigger a workflow dispatch"""
+    return trigger_workflow(repo_full_name, workflow_id, ref, inputs)
+
+
+@_tool("github.list_workflow_runs")
+def _list_workflow_runs(repo_full_name: str, workflow_id: int) -> Any:
+    """List workflow runs for a workflow"""
+    return list_workflow_runs(repo_full_name, workflow_id)
+
+
+@_tool("github.get_workflow_run")
+def _get_workflow_run(repo_full_name: str, run_id: int) -> Any:
+    """Get a specific workflow run"""
+    return get_workflow_run(repo_full_name, run_id)
+
+
+# ---------------------------------------------------------------------------
+# Autonomous PR Self-Healing MCP Toolset
+# ---------------------------------------------------------------------------
 
 
 @_tool(
-    name="github.get_issue",
-    description="Get a single issue by number",
-    input_schema={
-        "type": "object",
-        "properties": {"repo_full_name": {"type": "string"}, "number": {"type": "integer"}},
-        "required": ["repo_full_name", "number"],
-    },
+    "github.get_failing_prs",
+    param_descs={"repo": "Repository full name (owner/repo)"},
 )
-def _get_issue(params: dict[str, Any]) -> Any:
-    return get_issue(params["repo_full_name"], params["number"])
+def _get_failing_prs(repo: str) -> Any:
+    """List pull requests with failed CI workflows in a repository"""
+    return gh_get_failing_prs(repo)
 
 
 @_tool(
-    name="github.create_issue",
-    description="Create a new issue in a repository",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "title": {"type": "string"},
-            "body": {"type": "string"},
-            "labels": {
-                "type": "array",
-                "items": {"type": "string"},
-            },
-        },
-        "required": ["repo_full_name", "title"],
+    "github.get_ci_logs",
+    param_descs={
+        "repo": "Repository full name (owner/repo)",
+        "workflow_run_id": "GitHub Actions workflow run ID",
     },
 )
-def _create_issue_tool(params: dict[str, Any]) -> Any:
-    return create_issue(
-        params["repo_full_name"],
-        params["title"],
-        params.get("body", ""),
-        params.get("labels"),
-    )
+def _get_ci_logs(repo: str, workflow_run_id: int) -> Any:
+    """Fetch raw GitHub Actions logs for a workflow run"""
+    return gh_get_ci_logs(repo, workflow_run_id)
 
 
 @_tool(
-    name="github.comment_issue",
-    description="Add a comment to an issue or PR",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "number": {"type": "integer"},
-            "body": {"type": "string"},
-        },
-        "required": ["repo_full_name", "number", "body"],
-    },
+    "github.analyze_ci_failure",
+    param_descs={"logs": "Raw CI log text"},
 )
-def _comment_issue(params: dict[str, Any]) -> Any:
-    return comment_issue(params["repo_full_name"], params["number"], params["body"])
+def _analyze_ci_failure(logs: str) -> Any:
+    """Analyze CI log text and return structured error (error_type, file_hint, reason)"""
+    return gh_analyze_ci_failure(logs)
 
 
 @_tool(
-    name="github.close_issue",
-    description="Close an issue",
-    input_schema={
-        "type": "object",
-        "properties": {"repo_full_name": {"type": "string"}, "number": {"type": "integer"}},
-        "required": ["repo_full_name", "number"],
+    "github.locate_code_context",
+    param_descs={
+        "repo": "Repository full name (owner/repo)",
+        "error_context": "Structured error from analyze_ci_failure (error_type, file_hint, reason)",
     },
 )
-def _close_issue(params: dict[str, Any]) -> Any:
-    return close_issue(params["repo_full_name"], params["number"])
+def _locate_code_context(repo: str, error_context: dict[str, Any]) -> Any:
+    """Return relevant files and code snippets for an error context in a repo"""
+    return gh_locate_code_context(repo, error_context)
 
 
 @_tool(
-    name="github.list_workflows",
-    description="List GitHub Actions workflows for a repo",
-    input_schema={
-        "type": "object",
-        "properties": {"repo_full_name": {"type": "string"}},
-        "required": ["repo_full_name"],
+    "github.generate_fix_patch",
+    param_descs={
+        "code_context": "JSON or string from locate_code_context",
+        "error": "Structured error (error_type, file_hint, reason)",
     },
 )
-
-def _list_workflows(params: dict[str, Any]) -> Any:
-    return list_workflows(params["repo_full_name"])
+def _generate_fix_patch(code_context: str, error: dict[str, Any]) -> Any:
+    """Generate a unified diff patch from code context and error"""
+    return gh_generate_fix_patch(code_context, error)
 
 
 @_tool(
-    name="github.trigger_workflow",
-    description="Trigger a workflow dispatch",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {"type": "string"},
-            "workflow_id": {"type": "integer"},
-            "ref": {"type": "string"},
-            "inputs": {"type": "object"},
-        },
-        "required": ["repo_full_name", "workflow_id", "ref"],
+    "github.apply_fix_to_pr",
+    param_descs={
+        "repo": "Repository full name (owner/repo)",
+        "pr_number": "Pull request number",
+        "patch": "Unified diff patch text",
     },
 )
-
-def _trigger_workflow(params: dict[str, Any]) -> Any:
-    return trigger_workflow(
-        params["repo_full_name"],
-        params["workflow_id"],
-        params["ref"],
-        params.get("inputs"),
-    )
+def _apply_fix_to_pr(repo: str, pr_number: int, patch: str) -> Any:
+    """Commit a unified diff patch to the PR branch"""
+    return gh_apply_fix_to_pr(repo, pr_number, patch)
 
 
 @_tool(
-    name="github.list_workflow_runs",
-    description="List workflow runs for a workflow",
-    input_schema={
-        "type": "object",
-        "properties": {"repo_full_name": {"type": "string"}, "workflow_id": {"type": "integer"}},
-        "required": ["repo_full_name", "workflow_id"],
+    "github.rerun_ci",
+    param_descs={
+        "repo": "Repository full name (owner/repo)",
+        "workflow_run_id": "Workflow run ID to re-run",
     },
 )
-
-def _list_workflow_runs(params: dict[str, Any]) -> Any:
-    return list_workflow_runs(params["repo_full_name"], params["workflow_id"])
+def _rerun_ci(repo: str, workflow_run_id: int) -> Any:
+    """Trigger re-run of a GitHub Actions workflow run"""
+    return gh_rerun_ci(repo, workflow_run_id)
 
 
 @_tool(
-    name="github.get_workflow_run",
-    description="Get a specific workflow run",
-    input_schema={
-        "type": "object",
-        "properties": {"repo_full_name": {"type": "string"}, "run_id": {"type": "integer"}},
-        "required": ["repo_full_name", "run_id"],
+    "github.heal_failing_pr",
+    param_descs={
+        "repo": "Repository full name (owner/repo)",
+        "pr_number": "Specific PR to heal; omit to heal the first failing PR",
     },
 )
+def _heal_failing_pr(repo: str, pr_number: int | None = None) -> Any:
+    """Auto-heal a failing PR: get CI logs, analyze error, generate fix patch, apply to PR branch, rerun CI. Modifies code automatically."""
+    return gh_heal_failing_pr(repo, pr_number)
 
-def _get_workflow_run(params: dict[str, Any]) -> Any:
-    return get_workflow_run(params["repo_full_name"], params["run_id"])
 
-
-# --- Autonomous PR Self-Healing MCP Toolset ---
+# ---------------------------------------------------------------------------
+# Workspace — local file and git operations
+# ---------------------------------------------------------------------------
 
 
 @_tool(
-    name="github.get_failing_prs",
-    description="List pull requests with failed CI workflows in a repository",
-    input_schema={
-        "type": "object",
-        "properties": {"repo": {"type": "string", "description": "Repository full name (owner/repo)"}},
-        "required": ["repo"],
+    "workspace.read_file",
+    param_descs={
+        "repo_path": "Subdir of workspace or empty for root",
+        "path": "File path relative to repo_path; omit for README.md",
     },
 )
-def _get_failing_prs(params: dict[str, Any]) -> Any:
-    return gh_get_failing_prs(params["repo"])
+def _read_file(repo_path: str = "", path: str = "README.md") -> Any:
+    """Read a file from the local workspace. Use repo_path '' for workspace root."""
+    return ws_read_file(repo_path, path or "README.md")
 
 
 @_tool(
-    name="github.get_ci_logs",
-    description="Fetch raw GitHub Actions logs for a workflow run",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo": {"type": "string", "description": "Repository full name (owner/repo)"},
-            "workflow_run_id": {"type": "integer", "description": "GitHub Actions workflow run ID"},
-        },
-        "required": ["repo", "workflow_run_id"],
+    "workspace.write_file",
+    param_descs={
+        "path": "File path; omit for README.md when writing docs",
     },
 )
-def _get_ci_logs(params: dict[str, Any]) -> Any:
-    return gh_get_ci_logs(params["repo"], params["workflow_run_id"])
+def _write_file(content: str, repo_path: str = "", path: str = "README.md") -> Any:
+    """Write content to a file. If path omitted and content looks like docs, use README.md."""
+    return ws_write_file(repo_path, path or "README.md", content)
+
+
+@_tool("workspace.list_dir")
+def _list_dir(repo_path: str = "", subdir: str = "") -> Any:
+    """List files and dirs in the workspace (repo_path + subdir)."""
+    return ws_list_dir(repo_path, subdir)
+
+
+@_tool("workspace.git_status")
+def _git_status(repo_path: str = "") -> Any:
+    """Show git status and diff stat for the local repo."""
+    return git_status(repo_path)
+
+
+@_tool("workspace.git_add")
+def _git_add(paths: list[str], repo_path: str = "") -> Any:
+    """Stage files. Use paths ['.'] to stage all."""
+    return git_add(repo_path, paths)
+
+
+@_tool("workspace.git_commit")
+def _git_commit(message: str, repo_path: str = "") -> Any:
+    """Commit staged changes. Use conventional message: fix: ..., feat: ..., refactor: ..."""
+    return git_commit(repo_path, message)
+
+
+@_tool("workspace.git_push")
+def _git_push(repo_path: str = "", remote: str = "origin", branch: str | None = None) -> Any:
+    """Push to remote. Branch optional (default current)."""
+    return git_push(repo_path, remote, branch)
+
+
+# ---------------------------------------------------------------------------
+# Analysis
+# ---------------------------------------------------------------------------
 
 
 @_tool(
-    name="github.analyze_ci_failure",
-    description="Analyze CI log text and return structured error (error_type, file_hint, reason)",
-    input_schema={
-        "type": "object",
-        "properties": {"logs": {"type": "string", "description": "Raw CI log text"}},
-        "required": ["logs"],
-    },
+    "analysis.analyze_repo",
+    param_descs={"path": "Repo path; omit to use workspace root"},
 )
-def _analyze_ci_failure(params: dict[str, Any]) -> Any:
-    return gh_analyze_ci_failure(params["logs"])
-
-
-@_tool(
-    name="github.locate_code_context",
-    description="Return relevant files and code snippets for an error context in a repo",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo": {"type": "string", "description": "Repository full name (owner/repo)"},
-            "error_context": {
-                "type": "object",
-                "description": "Structured error from analyze_ci_failure (error_type, file_hint, reason)",
-            },
-        },
-        "required": ["repo", "error_context"],
-    },
-)
-def _locate_code_context(params: dict[str, Any]) -> Any:
-    return gh_locate_code_context(params["repo"], params["error_context"])
-
-
-@_tool(
-    name="github.generate_fix_patch",
-    description="Generate a unified diff patch from code context and error",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "code_context": {"type": "string", "description": "JSON or string from locate_code_context"},
-            "error": {
-                "type": "object",
-                "description": "Structured error (error_type, file_hint, reason)",
-            },
-        },
-        "required": ["code_context", "error"],
-    },
-)
-def _generate_fix_patch(params: dict[str, Any]) -> Any:
-    return gh_generate_fix_patch(params["code_context"], params["error"])
-
-
-@_tool(
-    name="github.apply_fix_to_pr",
-    description="Commit a unified diff patch to the PR branch",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo": {"type": "string", "description": "Repository full name (owner/repo)"},
-            "pr_number": {"type": "integer", "description": "Pull request number"},
-            "patch": {"type": "string", "description": "Unified diff patch text"},
-        },
-        "required": ["repo", "pr_number", "patch"],
-    },
-)
-def _apply_fix_to_pr(params: dict[str, Any]) -> Any:
-    return gh_apply_fix_to_pr(params["repo"], params["pr_number"], params["patch"])
-
-
-@_tool(
-    name="github.rerun_ci",
-    description="Trigger re-run of a GitHub Actions workflow run",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo": {"type": "string", "description": "Repository full name (owner/repo)"},
-            "workflow_run_id": {"type": "integer", "description": "Workflow run ID to re-run"},
-        },
-        "required": ["repo", "workflow_run_id"],
-    },
-)
-def _rerun_ci(params: dict[str, Any]) -> Any:
-    return gh_rerun_ci(params["repo"], params["workflow_run_id"])
-
-
-@_tool(
-    name="github.heal_failing_pr",
-    description="Auto-heal a failing PR: get CI logs, analyze error, generate fix patch, apply to PR branch, rerun CI. Modifies code automatically.",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo": {"type": "string", "description": "Repository full name (owner/repo)"},
-            "pr_number": {"type": "integer", "description": "Specific PR to heal; omit to heal the first failing PR"},
-        },
-        "required": ["repo"],
-    },
-)
-def _heal_failing_pr(params: dict[str, Any]) -> Any:
-    return gh_heal_failing_pr(params["repo"], params.get("pr_number"))
-
-
-# --- Workspace: local file and git (modify code, commit, push) ---
-
-
-@_tool(
-    name="workspace.read_file",
-    description="Read a file from the local workspace. Use repo_path '' for workspace root. If path is omitted, reads README.md at root.",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_path": {"type": "string", "description": "Subdir of workspace or empty for root"},
-            "path": {"type": "string", "description": "File path relative to repo_path; omit for README.md"},
-        },
-    },
-)
-def _read_file(params: dict[str, Any]) -> Any:
-    repo_path = params.get("repo_path", "")
-    path = params.get("path") or "README.md"
-    return ws_read_file(repo_path, path)
-
-
-@_tool(
-    name="workspace.write_file",
-    description="Write content to a file. If path omitted and content looks like docs, use README.md. Best practice: preserve style.",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_path": {"type": "string"},
-            "path": {"type": "string", "description": "File path; omit for README.md when writing docs"},
-            "content": {"type": "string"},
-        },
-        "required": ["content"],
-    },
-)
-def _write_file(params: dict[str, Any]) -> Any:
-    repo_path = params.get("repo_path", "")
-    path = params.get("path") or "README.md"
-    return ws_write_file(repo_path, path, params["content"])
-
-
-@_tool(
-    name="workspace.list_dir",
-    description="List files and dirs in the workspace (repo_path + subdir).",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_path": {"type": "string"},
-            "subdir": {"type": "string"},
-        },
-    },
-)
-def _list_dir(params: dict[str, Any]) -> Any:
-    return ws_list_dir(params.get("repo_path", ""), params.get("subdir", ""))
-
-
-@_tool(
-    name="workspace.git_status",
-    description="Show git status and diff stat for the local repo.",
-    input_schema={
-        "type": "object",
-        "properties": {"repo_path": {"type": "string"}},
-    },
-)
-def _git_status(params: dict[str, Any]) -> Any:
-    return git_status(params.get("repo_path", ""))
-
-
-@_tool(
-    name="workspace.git_add",
-    description="Stage files. Use paths ['.'] to stage all.",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_path": {"type": "string"},
-            "paths": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["paths"],
-    },
-)
-def _git_add(params: dict[str, Any]) -> Any:
-    return git_add(params.get("repo_path", ""), params["paths"])
-
-
-@_tool(
-    name="workspace.git_commit",
-    description="Commit staged changes. Use conventional message: fix: ..., feat: ..., refactor: ...",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_path": {"type": "string"},
-            "message": {"type": "string"},
-        },
-        "required": ["message"],
-    },
-)
-def _git_commit(params: dict[str, Any]) -> Any:
-    return git_commit(params.get("repo_path", ""), params["message"])
-
-
-@_tool(
-    name="workspace.git_push",
-    description="Push to remote. Branch optional (default current).",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_path": {"type": "string"},
-            "remote": {"type": "string"},
-            "branch": {"type": "string"},
-        },
-    },
-)
-def _git_push(params: dict[str, Any]) -> Any:
-    return git_push(
-        params.get("repo_path", ""),
-        params.get("remote", "origin"),
-        params.get("branch"),
-    )
-
-
-@_tool(
-    name="analysis.analyze_repo",
-    description="Analyze a local repo for bugs, performance, duplicate code, AI-generated code, and bad practices. Path optional: defaults to workspace root (OPENX_WORKSPACE_ROOT or cwd).",
-    input_schema={
-        "type": "object",
-        "properties": {"path": {"type": "string", "description": "Repo path; omit to use workspace root"}},
-    },
-)
-
-def _analyze_repo(params: dict[str, Any]) -> Any:
-    root = params.get("path") or config_settings.workspace_root
+def _analyze_repo(path: str = "") -> Any:
+    """Analyze a local repo for bugs, performance, duplicate code, AI-generated code, and bad practices."""
+    root = path or config_settings.workspace_root
     static_findings = analyze_static(root)
     arch = summarize_architecture(root)
     ai = analyze_with_ai({"static_findings": static_findings, "architecture": arch})
     return format_analysis_report(root, static_findings, arch, ai)
 
 
-def _register_all() -> None:
-    for tool in list(globals().values()):
-        if isinstance(tool, Tool):
-            register(tool)
-
-
-_register_all()
+# ---------------------------------------------------------------------------
+# Public backward-compat API
+# ---------------------------------------------------------------------------
 
 
 def list_tools() -> list[dict[str, Any]]:
+    """Return the tool list in the same shape as the old ``mcp.py``."""
     return [
         {"name": t.name, "description": t.description, "input_schema": t.input_schema}
         for t in TOOLS.values()
@@ -689,6 +528,8 @@ def list_tools() -> list[dict[str, Any]]:
 
 
 def call_tool(name: str, params: dict[str, Any]) -> Any:
-    if name not in TOOLS:
+    """Call a tool by its dotted name with a dict of keyword arguments."""
+    handler = _HANDLERS.get(name)
+    if handler is None:
         raise KeyError(f"Tool not found: {name}")
-    return TOOLS[name].handler(params)
+    return handler(**params)
