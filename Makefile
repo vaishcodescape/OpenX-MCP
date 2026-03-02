@@ -14,12 +14,7 @@ help:
 	@echo ""
 
 openx-agent:
-	@cd "$(CURDIR)" && \
-	if [ -d .venv ]; then \
-		.venv/bin/uvicorn openx_agent.main:app --reload --host 127.0.0.1 --port 8000; \
-	else \
-		uvicorn openx_agent.main:app --reload --host 127.0.0.1 --port 8000; \
-	fi
+	@cd "$(CURDIR)" && ./run-openx-agent
 
 openx-tui:
 	@cd "$(CURDIR)/openx-tui" && \

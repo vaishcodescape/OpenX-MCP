@@ -1,8 +1,42 @@
 #!/usr/bin/env bash
+# Start the OpenX MCP server. From repo root: ./run-openx-agent
+# If the package isn't installed, we ensure openx_agent is importable from the repo.
 set -e
-cd "$(dirname "$0")"
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$REPO_ROOT"
+
+# Prefer venv if present
 if [ -d .venv ]; then
-  .venv/bin/uvicorn openx_agent.main:app --reload --host 127.0.0.1 --port 8000
+  PYTHON="${REPO_ROOT}/.venv/bin/python"
+  UVICORN="${REPO_ROOT}/.venv/bin/uvicorn"
 else
-  uvicorn openx_agent.main:app --reload --host 127.0.0.1 --port 8000
+  PYTHON=python
+  UVICORN=uvicorn
 fi
+
+# Ensure openx_agent is importable: package dir is "openx-agent", Python expects "openx_agent"
+ensure_importable() {
+  if "$PYTHON" -c "import openx_agent" 2>/dev/null; then
+    return 0
+  fi
+  # Create symlink so Python finds openx_agent (Unix only)
+  if [ ! -e "$REPO_ROOT/openx_agent" ]; then
+    case "$(uname -s)" in
+      Darwin|Linux)
+        ln -s openx-agent "$REPO_ROOT/openx_agent"
+        echo "Created openx_agent -> openx-agent for import."
+        ;;
+      *)
+        echo "Run from repo root after: pip install -e ." >&2
+        echo "Or create a symlink: openx_agent -> openx-agent" >&2
+        exit 1
+        ;;
+    esac
+  fi
+  export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+  return 0
+}
+
+ensure_importable
+
+exec "$UVICORN" openx_agent.main:app --reload --host 127.0.0.1 --port 8000

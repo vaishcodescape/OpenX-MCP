@@ -134,6 +134,8 @@ make openx-agent    # or ./run-openx-agent
 make openx-tui      # or ./run-openx-tui
 ```
 
+If you see `ModuleNotFoundError: No module named 'openx_agent'`, start the server with `./run-openx-agent` or `make openx-agent` (they make the package importable from the repo). Or install the package first: `pip install -e .`
+
 ---
 
 ## Usage Examples

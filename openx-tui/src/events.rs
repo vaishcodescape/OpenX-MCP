@@ -66,13 +66,17 @@ pub fn key_to_action(
     if code == KeyCode::Tab      && bare && palette_visible { return Some(Action::PaletteSelect); }
 
     // ── Normal-mode (unfocused) shortcuts ─────────────────────────────────
+    // Only consume q, g, G as shortcuts when unfocused; let all other keys fall through
+    // to the input buffer so typing works when the input line is empty.
     if !input_has_focus && !palette_visible && bare {
-        return match code {
-            KeyCode::Char('q') => Some(Action::Quit),
-            KeyCode::Char('g') => Some(Action::ChatScrollTop),
-            KeyCode::Char('G') => Some(Action::ChatScrollBottom),
-            _ => None,
-        };
+        if let KeyCode::Char(c) = code {
+            match c {
+                'q' => return Some(Action::Quit),
+                'g' => return Some(Action::ChatScrollTop),
+                'G' => return Some(Action::ChatScrollBottom),
+                _ => {} // fall through so Action::Char(c) is returned below
+            }
+        }
     }
 
     // ── Palette trigger ───────────────────────────────────────────────────

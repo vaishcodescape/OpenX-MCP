@@ -123,9 +123,8 @@ impl App {
     pub fn poll_results(&mut self) {
         while let Ok(result) = self.result_rx.try_recv() {
             self.state.loading = false;
-            if let BackendResult::Chat { text } = result {
-                self.state.chat.messages.push(Message::openx(text));
-            }
+            let BackendResult::Chat { text } = result;
+            self.state.chat.messages.push(Message::openx(text));
             // Auto-scroll to the bottom on every new message.
             let total = Self::chat_total_lines(&self.state.chat.messages, true);
             self.state.chat.scroll = total.saturating_sub(10);

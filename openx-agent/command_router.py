@@ -101,6 +101,11 @@ Aliases: h/?→help  ls→tools  repos/prs/pr/issues/issue  cpr/mpr
 """
 
 
+def help_text() -> str:
+    """Return the help string (used by langchain_agent openx_help tool)."""
+    return HELP_TEXT
+
+
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------

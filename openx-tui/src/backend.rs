@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 /// Response from `POST /run` (legacy endpoint, kept for compatibility).
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct RunResponse {
     pub should_continue: bool,
     pub output: Option<serde_json::Value>,
@@ -22,6 +23,7 @@ pub struct RunResponse {
 #[derive(Debug, Deserialize)]
 pub struct ChatResponse {
     pub response: Option<String>,
+    #[allow(dead_code)]
     pub conversation_id: Option<String>,
     pub error: Option<String>,
 }
