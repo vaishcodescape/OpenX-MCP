@@ -1,243 +1,315 @@
-<p align="center">
-  <h1 align="center"> OpenX </h1>
-  <p align="center">
-    <strong>An intelligent MCP (Model Context Protocol) server that automates GitHub workflows, CI/CD pipelines, code analysis, and pull request self-healing.</strong>
-  </p>
+<h1 align="center">OpenX</h1>
 
 <p align="center">
-  <img src="OpenX-Terminal.png" alt="OpenX Terminal UI" width="800"/>
-</p>
-<p align="center">
-  <em>OpenX Terminal — command palette, slash commands, and real-time MCP communication.</em>
+  <strong>AI-powered MCP server for autonomous GitHub automation, CI/CD self-healing, and intelligent code analysis.</strong>
 </p>
 
-## Project Overview
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-5A67D8" alt="MCP" />
+  <img src="https://img.shields.io/badge/Claude-Anthropic_API-D97706?logo=anthropic&logoColor=white" alt="Anthropic" />
+  <img src="https://img.shields.io/badge/LangGraph-ReAct_Agent-1C3C3C?logo=langchain&logoColor=white" alt="LangGraph" />
+  <img src="https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white" alt="Docker" />
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT" />
+</p>
 
-**OpenX** is a autonomous Developer agent that connects to GitHub repositories and performs intelligent automation — from listing PRs and managing issues to automatically detecting CI failures, analyzing logs, generating code patches, and self-healing broken builds. It combines a **Python MCP backend** with a **Rust-powered TUI** and a **LangChain ReAct AI agent** for natural language command execution.
+<p align="center">
+  <b>37 tools</b> &middot; <b>5 resources</b> &middot; <b>3 prompts</b> &middot; <b>1 autonomous agent</b>
+</p>
 
-### What Makes This Project Stand Out
-
-| Capability | Description |
-|-----------|-------------|
-| **Autonomous CI/CD Self-Healing** | Detects failing PRs → fetches CI logs → analyzes errors → generates code fix patches → commits to PR branch → re-runs CI pipeline — **fully automated, zero human intervention** |
-| **AI-Powered ReAct Agent** | LangChain-based autonomous agent with multi-step reasoning, tool selection, and conversation memory |
-| **50+ MCP Tools** | Comprehensive tool registry covering GitHub repos, PRs, issues, workflows, code analysis, README management, and local workspace operations |
-| **Hybrid Architecture** | Python backend (MCP server + AI agent) + Rust frontend (high-performance TUI with async event handling) |
-| **RAG Pipeline** | Retrieval-Augmented Generation for indexed GitHub repository search and context-aware responses |
+<p align="center">
+  <img src="openx-mcp.png" alt="OpenX MCP Architecture" width="800"/>
+</p>
 
 ---
 
-## Technical Architecture
+## Why OpenX?
 
-![OpenX-MCP System Architecture](openx-mcp-architecture.png)
+OpenX is a production-grade [Model Context Protocol](https://modelcontextprotocol.io) server that turns any MCP client (Claude Desktop, Cursor, or custom) into a full GitHub automation powerhouse. It doesn't just wrap the GitHub API — it **reasons, plans, and acts** autonomously through a LangGraph ReAct agent backed by Claude.
+
+### Autonomous CI/CD Self-Healing
+
+The flagship capability. A single tool call triggers an end-to-end pipeline with zero human intervention:
+
+```
+Failing PR detected
+  → CI logs fetched & decompressed
+    → Error pattern-matched (regex engine: 12+ failure types)
+      → Relevant source code located via GitHub Search API
+        → Fix patch generated as unified diff
+          → Patch committed to PR branch
+            → CI re-run triggered
+```
+
+> Handles `ModuleNotFoundError`, `ImportError`, `SyntaxError`, `NameError`, test failures, lint failures, npm errors, and more.
+
+---
+
+## What Makes This Stand Out
+
+| Engineering Decision | Why It Matters |
+|---|---|
+| **Pure MCP architecture** | No REST API wrapper — native `stdio`, `streamable-http`, and `SSE` transports. Plug into any MCP client without glue code |
+| **LangGraph ReAct agent** | Built-in autonomous agent with multi-step reasoning, tool selection, and error recovery — not a simple chain |
+| **Modular sub-server composition** | 5 namespaced `FastMCP` sub-servers mounted into a root server — clean separation of concerns at the protocol level |
+| **Dual GitHub backend** | `gh` CLI (fast subprocess) with automatic fallback to PyGithub API — best of both worlds for speed and reliability |
+| **Zero-ML knowledge base** | TF-IDF keyword search over in-memory document store — no GPU, no embeddings server, no FAISS. Lightweight and instant |
+| **Thread-safe concurrency** | Thread pool executors for non-blocking I/O, double-checked locking for lazy singletons, O(1) LRU-evicting TTL cache |
+| **Path-traversal guard** | All workspace file operations validated against the workspace root — agents can't escape the sandbox |
+| **Docker-ready** | Multi-stage build with `gh` CLI baked in, health check endpoint, configurable transport via `CMD` override |
 
 ---
 
 ## Tech Stack
 
-### Languages & Frameworks
-- **Python 3.14+** — Backend server, AI agent, GitHub integration, static analysis
-- **Rust** — High-performance terminal UI with async event loop
-- **LangChain** — ReAct agent framework with structured tool calling
-- **FastAPI** — RESTful MCP server with JSON-RPC endpoints
-
-### Agentic AI
-- **Large Language Models (LLM)** — Anthropic  Claude Opus API
-- **ReAct Prompting** — Autonomous multi-step reasoning with tool-use and observation loops
-- **Retrieval-Augmented Generation (RAG)** — Indexed repository knowledge base for context-aware AI responses
-- **Prompt Engineering** — Compact, optimized system prompts for fast inference and accurate tool selection
-
-### DevOps & Automation
-- **GitHub REST API v3** — Full CRUD for repositories, pull requests, issues, workflows, and CI/CD
-- **GitHub CLI (`gh`)** — Fast subprocess-based operations with thread pool background execution
-- **CI/CD Pipeline Automation** — Workflow triggering, log analysis, failure detection, automated re-runs
-- **Autonomous Self-Healing** — End-to-end pipeline: detect failure → analyze logs → generate patch → commit fix → re-run CI
-
-### Software Engineering Practices
-- **Concurrent Programming** — Thread pool executors for non-blocking I/O, thread-safe lazy initialization
-- **Caching Layer** — TTL-based response caching for API rate limit management
-- **Error Handling** — Graceful degradation with gh CLI → PyGithub API fallback chain
-- **Modular Architecture** — Clean separation: MCP tools, command routing, AI agent, GitHub client, workspace operations
-- **Static Code Analysis** — Bug detection, performance analysis, duplicate code detection, architecture summarization
-
-### Infrastructure
-- **MCP (Model Context Protocol)** — Standardized tool registration and invocation protocol
-- **httpx** — Async-capable HTTP client with connection pooling
-- **PyGithub** — Python GitHub API wrapper with enterprise support
-- **Pydantic** — Data validation and serialization for tool schemas
-- **LangSmith** — LLM observability and tracing integration
-
----
-
-## Key Features
-
-### Autonomous CI/CD Self-Healing Pipeline
-```
-Failing PR detected → CI logs fetched → Error analyzed (regex + pattern matching)
-    → Code context located (GitHub Search API) → Fix patch generated (unified diff)
-        → Patch committed to PR branch → CI re-run triggered
-```
-Supports: `ModuleNotFoundError`, `ImportError`, `SyntaxError`, `NameError`, `test failures`, `lint failures`, `npm errors`, and more.
-
-### AI Agent with Natural Language Interface
-- Type commands in plain English: *"List failing PRs in my repo and fix them"*
-- Multi-step autonomous reasoning with observation-based decision making
-- Per-conversation memory (8-turn sliding window)
-- Fast-path optimization: known commands bypass the LLM entirely for sub-second response
-
-### Repository Analysis Engine
-- **Static Analysis** — Detects bugs, performance issues, security concerns
-- **Architecture Summary** — Language breakdown, module depth, LOC statistics
-- **AI-Enhanced Insights** — LLM-powered analysis of code patterns and anti-patterns
-
-### Rust Terminal UI
-- Built with `ratatui` and `crossterm` for cross-platform terminal rendering
-- Command palette (`Ctrl+K`), file search (`Ctrl+P`), activity drawer (`Ctrl+D`)
-- Real-time MCP server communication with streaming responses
+| Layer | Technologies |
+|---|---|
+| **Protocol** | FastMCP, Model Context Protocol (stdio / streamable-http / SSE) |
+| **AI / Agent** | LangGraph, LangChain, Anthropic Claude API (`langchain-anthropic`) |
+| **GitHub** | PyGithub, GitHub REST API v3, GitHub CLI (`gh`), httpx |
+| **Analysis** | Custom static analysis engine, AI-powered code review (Claude) |
+| **Infrastructure** | Docker, Pydantic, python-dotenv, thread pool concurrency |
+| **Search** | TF-IDF keyword retrieval, in-memory document store with LRU eviction |
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-- Python 3.14+, Rust toolchain (for TUI), `gh` CLI (optional, for fast GitHub operations)
-
-### Installation
+### Install
 
 ```bash
 git clone https://github.com/vaishcodescape/OpenX-MCP.git
 cd OpenX-MCP
-python -m venv .venv
-source .venv/bin/activate
 pip install -e .
 ```
 
-### Configuration
+### Configure
 
-Create a `.env` file with:
+Create a `.env` file:
 
 ```env
 GITHUB_TOKEN=ghp_your_token_here
-ANTHROPIC_API_KEY=sk-ant-your_key_here        # Required: powers the Claude agent
-ANTHROPIC_MODEL=claude-3-opus-latest           # Optional: defaults to claude-3-opus-latest
+ANTHROPIC_API_KEY=sk-ant-your_key_here
 ```
 
-> **GitHub Token Permissions** (Fine-grained PAT): `Contents: R/W`, `Issues: R/W`, `Pull Requests: R/W`, `Metadata: Read`
+> **GitHub Token** (fine-grained PAT): grant `Contents: R/W`, `Issues: R/W`, `Pull Requests: R/W`, `Metadata: Read`.
 
 ### Run
 
 ```bash
-# Start the MCP server (Python backend)
-make openx-agent    # or ./run-openx-agent
-
-# Start the Rust TUI (in another terminal)
-make openx-tui      # or ./run-openx-tui
+make serve            # stdio transport (Claude Desktop, Cursor)
+make serve-http       # HTTP transport on :8000
+make docker && make docker-run   # Docker
 ```
-
-If you see `ModuleNotFoundError: No module named 'openx_agent'`, start the server with `./run-openx-agent` or `make openx-agent` (they make the package importable from the repo). Or install the package first: `pip install -e .`
 
 ---
 
-## Usage Examples
+## Connect Your MCP Client
 
-### Command Line
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "openx": {
+      "command": "python",
+      "args": ["-m", "openx_agent.server"],
+      "cwd": "/path/to/OpenX-MCP",
+      "env": {
+        "PYTHONPATH": "/path/to/OpenX-MCP",
+        "GITHUB_TOKEN": "ghp_...",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+Add to `.cursor/mcp.json` in your workspace:
+
+```json
+{
+  "mcpServers": {
+    "openx": {
+      "command": "python",
+      "args": ["-m", "openx_agent.server"],
+      "cwd": "/path/to/OpenX-MCP",
+      "env": {
+        "PYTHONPATH": "/path/to/OpenX-MCP",
+        "GITHUB_TOKEN": "ghp_...",
+        "ANTHROPIC_API_KEY": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Docker (HTTP)</b></summary>
+
 ```bash
-openx-cli list_prs owner/repo
-openx-cli get_pr owner/repo 42
-openx-cli analyze_repo /path/to/repo
-openx-cli heal_ci owner/repo          # Auto-heal first failing PR
+docker build -t openx-mcp .
+docker run --rm -p 8000:8000 --env-file .env openx-mcp
 ```
 
-### TUI Slash Commands
-| Command | Description |
-|---------|-------------|
-| `/listrepos` | List repositories for authenticated account |
-| `/listprs` | List open pull requests |
-| `/getpr` | Get PR details with diff and CI status |
-| `/createissue` | Create a new GitHub issue |
-| `/commentpr` | Post a comment on a PR |
-| `/mergepr` | Merge a PR (merge/squash/rebase) |
-| `/analyzerepo` | Run static analysis + architecture summary |
-| `gh <command>` | Run any GitHub CLI command in background |
+For stdio transport:
 
-### MCP API
 ```bash
-# List tools
-curl -s http://localhost:8000/mcp \
-  -d '{"id":1,"method":"tools/list"}'
-
-# Call a tool
-curl -s http://localhost:8000/mcp \
-  -d '{"id":2,"method":"tools/call","params":{"name":"github.list_open_prs","arguments":{"repo_full_name":"owner/repo"}}}'
+docker run --rm -i --env-file .env openx-mcp --stdio
 ```
+</details>
+
+---
+
+## Full Tool Reference
+
+<details>
+<summary><b>AI Agent</b> — 1 tool</summary>
+
+| Tool | Description |
+|---|---|
+| `agent_chat` | Send a natural-language request to the LangGraph ReAct agent for autonomous multi-step execution |
+</details>
+
+<details>
+<summary><b>GitHub</b> — 18 tools</summary>
+
+| Tool | Description |
+|---|---|
+| `github_list_repos` | List repositories |
+| `github_list_prs` | List open pull requests |
+| `github_get_pr` | Get PR details with diff and CI status |
+| `github_create_pr` | Create a pull request |
+| `github_comment_pr` | Comment on a PR |
+| `github_merge_pr` | Merge a PR (merge/squash/rebase) |
+| `github_get_readme` | Get README content |
+| `github_update_readme` | Create or update README |
+| `github_list_issues` | List issues |
+| `github_get_issue` | Get issue details |
+| `github_create_issue` | Create an issue |
+| `github_comment_issue` | Comment on an issue |
+| `github_close_issue` | Close an issue |
+| `github_list_workflows` | List GitHub Actions workflows |
+| `github_trigger_workflow` | Trigger a workflow dispatch |
+| `github_list_workflow_runs` | List workflow runs |
+| `github_get_workflow_run` | Get workflow run details |
+| `github_run_gh_command` | Run a raw `gh` CLI command |
+</details>
+
+<details>
+<summary><b>CI/CD Self-Healing</b> — 8 tools</summary>
+
+| Tool | Description |
+|---|---|
+| `github_get_failing_prs` | List PRs with failed CI |
+| `github_get_ci_logs` | Fetch CI logs for a workflow run |
+| `github_analyze_ci_failure` | Analyze CI logs for error patterns |
+| `github_locate_code_context` | Find relevant code for an error |
+| `github_generate_fix_patch` | Generate a unified diff fix |
+| `github_apply_fix_to_pr` | Apply patch to PR branch |
+| `github_rerun_ci` | Re-run a CI workflow |
+| `github_heal_failing_pr` | Auto-heal a failing PR end-to-end |
+</details>
+
+<details>
+<summary><b>Workspace</b> — 7 tools</summary>
+
+| Tool | Description |
+|---|---|
+| `workspace_read_file` | Read a file from the workspace |
+| `workspace_write_file` | Write content to a file |
+| `workspace_list_dir` | List files and directories |
+| `workspace_git_status` | Show git status |
+| `workspace_git_add` | Stage files |
+| `workspace_git_commit` | Commit staged changes |
+| `workspace_git_push` | Push to remote |
+</details>
+
+<details>
+<summary><b>Analysis</b> — 1 tool &nbsp;|&nbsp; <b>Knowledge Base</b> — 2 tools</summary>
+
+| Tool | Description |
+|---|---|
+| `analysis_analyze_repo` | Run full static + AI code analysis |
+| `rag_index_repo` | Index a GitHub repo for keyword search |
+| `rag_search` | Search the knowledge base |
+</details>
+
+<details>
+<summary><b>Resources</b> — 5 &nbsp;|&nbsp; <b>Prompts</b> — 3</summary>
+
+| Resource / Prompt | Description |
+|---|---|
+| `openx://config` | Server configuration (secrets redacted) |
+| `openx://help` | Full tool reference |
+| `github://{owner}/{repo}/readme` | README content |
+| `github://{owner}/{repo}/prs` | Open pull requests |
+| `github://{owner}/{repo}/issues/{state}` | Issues (open/closed/all) |
+| **Prompt:** `analyze_repository` | Comprehensive code analysis workflow |
+| **Prompt:** `heal_ci` | CI/CD self-healing workflow |
+| **Prompt:** `github_workflow` | General GitHub automation task |
+</details>
 
 ---
 
 ## Project Structure
 
+```text
+openx-agent/                     # Python MCP server package
+├── server.py                    # FastMCP entry point — mounts 5 sub-servers
+├── agent.py                     # LangGraph ReAct agent (13 tools, Claude)
+├── llm.py                       # ChatAnthropic factory (langchain-anthropic)
+├── github_client.py             # GitHub API — PyGithub + httpx + CI healing pipeline
+├── gh_cli.py                    # gh CLI subprocess wrapper (thread pool)
+├── workspace.py                 # Sandboxed file I/O and git operations
+├── rag.py                       # TF-IDF knowledge base (zero ML dependencies)
+├── cache.py                     # O(1) LRU-evicting TTL cache
+├── config.py                    # Frozen dataclass settings from .env
+├── tools/                       # MCP tool definitions (namespaced sub-servers)
+│   ├── github.py                #   26 GitHub tools
+│   ├── workspace_tools.py       #   7 workspace tools
+│   ├── analysis.py              #   1 analysis tool
+│   ├── rag_tools.py             #   2 knowledge base tools
+│   └── agent_tools.py           #   1 agent tool (agent_chat)
+└── analysis/                    # Static analysis + AI code review engine
+    ├── static_analysis.py       #   Bug/perf/duplication detection
+    ├── ai_analysis.py           #   Claude-powered review
+    ├── architecture.py          #   Language breakdown, module stats
+    └── format_report.py         #   Report formatter
 ```
-OpenX-MCP/
-├── openx-agent/                 # Python MCP backend
-│   ├── langchain_agent.py       # LangChain ReAct agent with fast-path optimization
-│   ├── mcp.py                   # 50+ MCP tool definitions and registry
-│   ├── github_client.py         # GitHub API client (PyGithub + httpx)
-│   ├── gh_cli.py                # GitHub CLI subprocess wrapper (thread pool)
-│   ├── workspace.py             # Local file/git operations (background execution)
-│   ├── command_router.py        # Command parsing and routing
-│   ├── rag.py                   # RAG knowledge base (index + search)
-│   ├── llm.py                   # LLM provider configuration
-│   ├── cache.py                 # TTL-based response caching
-│   ├── config.py                # Settings and environment config
-│   └── analysis/                # Static analysis + AI analysis engine
-│       ├── static_analysis.py
-│       ├── ai_analysis.py
-│       ├── architecture.py
-│       └── format_report.py
-├── openx-tui/                   # Rust terminal UI
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── app.rs               # Application state and event loop
-│   │   ├── backend.rs           # MCP server communication
-│   │   ├── ui/                  # Terminal rendering components
-│   │   └── services/            # Background services
-│   ├── Cargo.toml
-│   └── Cargo.lock
-├── Makefile
-├── pyproject.toml
-└── requirements.txt
-```
+
 ---
-## Steps for Contribution
 
-1. **Fork the repository** — Click "Fork" on GitHub to create your own copy under your account.
+## Environment Variables
 
-2. **Clone your fork** — Clone the forked repo locally and add the upstream remote:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/OpenX-MCP.git
-   cd OpenX-MCP
-   git remote add upstream https://github.com/vaishcodescape/OpenX-MCP.git
-   ```
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GITHUB_TOKEN` | Yes | — | GitHub fine-grained PAT |
+| `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key for Claude |
+| `ANTHROPIC_MODEL` | No | `claude-sonnet-4-20250514` | Claude model name |
+| `OPENX_ACTIVE_REPO` | No | — | Default repository (`owner/repo`) |
+| `OPENX_WORKSPACE_ROOT` | No | cwd | Local workspace root |
+| `OPENX_LLM_MAX_TOKENS` | No | 768 | Max tokens per LLM call |
+| `OPENX_LLM_TIMEOUT_SEC` | No | 90 | LLM request timeout (seconds) |
+| `GITHUB_BASE_URL` | No | — | GitHub Enterprise API base URL |
 
-3. **Create a branch** — Use a short, descriptive branch name (e.g. `fix/ci-timeout`, `feat/workspace-sandbox`):
-   ```bash
-   git checkout -b your-branch-name
-   ```
-
-4. **Make your changes** — Follow existing code style and run tests/linters. For Python: `pip install -e ".[dev]"` (if available) and run tests; for Rust: `cargo test` in `openx-tui/`.
-
-5. **Commit and push** — Use clear commit messages and push to your fork:
-   ```bash
-   git add .
-   git commit -m "Brief description of your change"
-   git push origin your-branch-name
-   ```
-
-6. **Open a Pull Request** — On GitHub, open a PR from your branch to `vaishcodescape/OpenX-MCP` main. Describe what you changed and why; link any related issues.
 ---
+
+## Contributing
+
+1. Fork the repository
+2. Create a branch: `git checkout -b feat/your-feature`
+3. Make changes and commit: `git commit -m "feat: description"`
+4. Push and open a PR against `main`
 
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
-
----
- 

@@ -1,25 +1,35 @@
-# OpenX MCP — single commands to run openx-agent and openx-tui
+.PHONY: serve serve-http install dev docker docker-run kill-ports help
 
-.PHONY: openx-agent openx-tui kill-ports help
-
-# Ports to kill (default: 8000 for openx-agent). Override: make kill-ports PORTS="8000 3000"
 PORTS ?= 8000
 
 help:
-	@echo "OpenX MCP"
+	@echo "OpenX MCP Server"
 	@echo ""
-	@echo "  make openx-agent  — start the Python MCP server (http://127.0.0.1:8000)"
-	@echo "  make openx-tui    — build (if needed) and run the Rust TUI"
-	@echo "  make kill-ports   — kill processes on port(s) (default: 8000; use PORTS=\"8000 3000\" for multiple)"
+	@echo "  make install     — install the package (editable) + dependencies"
+	@echo "  make serve       — start the MCP server (stdio transport)"
+	@echo "  make serve-http  — start the MCP server (HTTP transport on :8000)"
+	@echo "  make dev         — install + start in HTTP mode for development"
+	@echo "  make docker      — build the Docker image"
+	@echo "  make docker-run  — run the server in Docker (HTTP on :8000)"
+	@echo "  make kill-ports  — kill processes on port(s) (default: 8000)"
 	@echo ""
 
-openx-agent:
+install:
+	pip install -e .
+
+serve:
 	@cd "$(CURDIR)" && ./run-openx-agent
 
-openx-tui:
-	@cd "$(CURDIR)/openx-tui" && \
-	cargo build --release && \
-	OPENX_BASE_URL=$${OPENX_BASE_URL:-http://127.0.0.1:8000} ./target/release/openx-tui
+serve-http:
+	@cd "$(CURDIR)" && ./run-openx-agent --http --host 127.0.0.1 --port 8000
+
+dev: install serve-http
+
+docker:
+	docker build -t openx-mcp .
+
+docker-run:
+	docker run --rm -p 8000:8000 --env-file .env openx-mcp
 
 kill-ports:
 	@for p in $(PORTS); do \

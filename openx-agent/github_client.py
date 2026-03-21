@@ -983,30 +983,28 @@ def rerun_ci(repo_full_name: str, workflow_run_id: int) -> dict[str, Any]:
 
 
 def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[str, Any]:
-    """Run full CI healing pipeline: find failing PR → get logs → analyze → locate context → generate patch → apply to PR → rerun CI.
-    If pr_number is None, heals the first failing PR in the repo. Returns structured status and errors."""
-    from .progress import clear_progress, set_progress
+    """Run full CI healing pipeline: find failing PR -> get logs -> analyze ->
+    locate context -> generate patch -> apply to PR -> rerun CI.
 
-    op = "heal_ci"
+    If pr_number is None, heals the first failing PR in the repo.
+    """
     try:
-        set_progress(op, "get_failing_prs", "Finding PRs with failing CI...", {"repo": repo_full_name})
+        logger.info("Finding PRs with failing CI in %s", repo_full_name)
         failing = get_failing_prs(repo_full_name)
     except Exception as e:
-        clear_progress(op)
         return {"status": "error", "message": f"Failed to get failing PRs: {e}", "stage": "get_failing_prs"}
 
     if not failing:
-        clear_progress(op)
         return {"status": "no_failing_prs", "message": "No open PRs with failed CI in this repo."}
 
     pr_entry = next((p for p in failing if p["pr_number"] == pr_number), None) if pr_number else failing[0]
     if pr_number and not pr_entry:
-        clear_progress(op)
         return {"status": "not_failing", "message": f"PR #{pr_number} does not have failed CI or not found."}
 
     assert pr_entry is not None
     pr_num = pr_entry["pr_number"]
-    set_progress(op, "get_failing_prs", f"Found failing PR #{pr_num}", {"pr_number": pr_num})
+    logger.info("Healing PR #%d in %s", pr_num, repo_full_name)
+
     failed_checks = pr_entry.get("failed_checks", [])
     run_id = None
     for check in failed_checks:
@@ -1014,7 +1012,6 @@ def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[s
         if run_id:
             break
     if not run_id:
-        clear_progress(op)
         return {
             "status": "no_logs",
             "pr_number": pr_num,
@@ -1022,25 +1019,23 @@ def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[s
         }
 
     try:
-        set_progress(op, "get_ci_logs", "Fetching CI logs...", {"workflow_run_id": run_id})
+        logger.info("Fetching CI logs for run %d", run_id)
         logs = get_ci_logs(repo_full_name, run_id)
     except Exception as e:
-        clear_progress(op)
         return {"status": "error", "pr_number": pr_num, "message": f"Failed to get CI logs: {e}", "stage": "get_ci_logs"}
 
-    set_progress(op, "analyze_ci_failure", "Analyzing failure...", {})
+    logger.info("Analyzing CI failure")
     error = analyze_ci_failure(logs)
+
     try:
-        set_progress(op, "locate_code_context", "Locating code context...", {"file_hint": error.get("file_hint")})
+        logger.info("Locating code context for %s", error.get("file_hint"))
         code_context = locate_code_context(repo_full_name, error)
     except Exception as e:
-        clear_progress(op)
         return {"status": "error", "pr_number": pr_num, "message": f"Failed to locate code context: {e}", "stage": "locate_code_context"}
 
-    set_progress(op, "generate_fix_patch", "Generating fix patch...", {})
+    logger.info("Generating fix patch")
     patch = generate_fix_patch(code_context, error)
     if not patch or not patch.strip():
-        clear_progress(op)
         return {
             "status": "no_fix",
             "pr_number": pr_num,
@@ -1050,18 +1045,17 @@ def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[s
         }
 
     try:
-        set_progress(op, "apply_fix_to_pr", f"Applying patch to PR #{pr_num}...", {})
+        logger.info("Applying patch to PR #%d", pr_num)
         result = apply_fix_to_pr(repo_full_name, pr_num, patch)
     except Exception as e:
-        clear_progress(op)
         return {"status": "error", "pr_number": pr_num, "message": f"Failed to apply fix to PR: {e}", "stage": "apply_fix_to_pr"}
 
     try:
-        set_progress(op, "rerun_ci", "Re-running CI...", {"workflow_run_id": run_id})
+        logger.info("Re-running CI for run %d", run_id)
         rerun_ci(repo_full_name, run_id)
     except Exception as e:
         result["rerun_error"] = str(e)
-    clear_progress(op)
+
     result["status"] = "healed"
     result["pr_number"] = pr_num
     result["workflow_run_id"] = run_id

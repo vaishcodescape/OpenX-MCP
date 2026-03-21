@@ -1,17 +1,21 @@
-"""RAG pipeline — fetch GitHub data, embed, store in FAISS, retrieve."""
+"""RAG pipeline — fetch GitHub data, store in-memory, retrieve via keyword search.
+
+Replaces the previous FAISS/HuggingFace vector approach with a lightweight
+TF-IDF keyword search that requires zero ML dependencies.  Documents are
+stored as plain text with metadata; retrieval uses term-frequency scoring.
+"""
 
 from __future__ import annotations
 
 import base64
 import logging
+import math
 import os
-from collections import OrderedDict
+import re
+from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Any
-
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
-from langchain_core.tools import tool
 
 from .config import settings
 from .github_client import (
@@ -20,26 +24,104 @@ from .github_client import (
     list_repos,
     list_workflows,
 )
-from .llm import get_embeddings
 
 logger = logging.getLogger(__name__)
 
-# In-memory cache of per-repo FAISS stores (LRU-bounded).
+# ---------------------------------------------------------------------------
+# Document model (stdlib only — no LangChain dependency)
+# ---------------------------------------------------------------------------
+
+_STOP_WORDS = frozenset(
+    "a an the is was were be been being have has had do does did will would "
+    "shall should may might can could and but or nor not so yet for of in on "
+    "at to from by with as into through during before after above below between "
+    "out off over under again further then once here there when where why how "
+    "all each every both few more most other some such no only own same than "
+    "too very just don't isn't aren't wasn't weren't hasn't haven't hadn't "
+    "doesn't didn't won't wouldn't shan't shouldn't can't cannot couldn't "
+    "mustn't let's that's who's what's here's there's it's".split()
+)
+
+_TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase, split on non-alnum, drop stop words."""
+    return [t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOP_WORDS]
+
+
+@dataclass
+class _Document:
+    content: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    tokens: list[str] = field(default_factory=list, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.tokens:
+            self.tokens = _tokenize(self.content)
+
+
+# ---------------------------------------------------------------------------
+# In-memory document store with TF-IDF scoring
+# ---------------------------------------------------------------------------
+
 _MAX_STORES = 20
-_STORES: OrderedDict[str, FAISS] = OrderedDict()
 
-# Disk cache directory.
-_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".openx_cache", "faiss")
+
+class _DocStore:
+    """Lightweight keyword store for a single repo's documents."""
+
+    __slots__ = ("docs", "idf")
+
+    def __init__(self, docs: list[_Document]) -> None:
+        self.docs = docs
+        self.idf: dict[str, float] = {}
+        self._build_idf()
+
+    def _build_idf(self) -> None:
+        n = len(self.docs)
+        if n == 0:
+            return
+        df: Counter[str] = Counter()
+        for doc in self.docs:
+            df.update(set(doc.tokens))
+        self.idf = {term: math.log((n + 1) / (freq + 1)) + 1.0 for term, freq in df.items()}
+
+    def search(self, query: str, k: int = 4) -> list[dict[str, Any]]:
+        q_tokens = _tokenize(query)
+        if not q_tokens:
+            return []
+
+        q_tf = Counter(q_tokens)
+        scores: list[tuple[float, int]] = []
+        for idx, doc in enumerate(self.docs):
+            doc_tf = Counter(doc.tokens)
+            score = 0.0
+            for term, q_count in q_tf.items():
+                if term in doc_tf:
+                    tf = 1 + math.log(doc_tf[term])
+                    idf = self.idf.get(term, 1.0)
+                    score += tf * idf * q_count
+            if score > 0:
+                scores.append((score, idx))
+
+        scores.sort(key=lambda x: x[0], reverse=True)
+        return [
+            {"content": self.docs[idx].content, "metadata": self.docs[idx].metadata, "score": round(sc, 4)}
+            for sc, idx in scores[:k]
+        ]
+
+
+_STORES: OrderedDict[str, _DocStore] = OrderedDict()
 
 
 # ---------------------------------------------------------------------------
-# Document loaders — turn GitHub API data into LangChain Documents
+# Document loaders — turn GitHub API data into _Document objects
 # ---------------------------------------------------------------------------
 
 
-def _load_repo_metadata(repo_full_name: str) -> list[Document]:
-    """Fetch high-level repo info."""
-    docs: list[Document] = []
+def _load_repo_metadata(repo_full_name: str) -> list[_Document]:
+    docs: list[_Document] = []
     try:
         repo = get_repo(repo_full_name)
         text = (
@@ -51,80 +133,54 @@ def _load_repo_metadata(repo_full_name: str) -> list[Document]:
             f"Topics: {', '.join(repo.get_topics())}\n"
             f"URL: {repo.html_url}"
         )
-        docs.append(
-            Document(
-                page_content=text,
-                metadata={
-                    "source": "github",
-                    "repo": repo_full_name,
-                    "type": "repo_metadata",
-                    "url": repo.html_url,
-                },
-            )
-        )
+        docs.append(_Document(
+            content=text,
+            metadata={"source": "github", "repo": repo_full_name, "type": "repo_metadata", "url": repo.html_url},
+        ))
     except Exception:
         logger.exception("Failed to load repo metadata for %s", repo_full_name)
     return docs
 
 
-def _load_pull_requests(repo_full_name: str) -> list[Document]:
-    """Fetch open PRs as documents."""
-    docs: list[Document] = []
+def _load_pull_requests(repo_full_name: str) -> list[_Document]:
+    docs: list[_Document] = []
     try:
         prs = list_open_prs(repo_full_name)
-        for pr in prs[:20]:  # cap to avoid huge payloads
+        for pr in prs[:20]:
             text = (
                 f"Pull Request #{pr['number']}: {pr['title']}\n"
                 f"Author: {pr['user']}\n"
                 f"State: {pr['state']}\n"
                 f"URL: {pr['html_url']}"
             )
-            docs.append(
-                Document(
-                    page_content=text,
-                    metadata={
-                        "source": "github",
-                        "repo": repo_full_name,
-                        "type": "pull_request",
-                        "pr_number": pr["number"],
-                        "url": pr["html_url"],
-                    },
-                )
-            )
+            docs.append(_Document(
+                content=text,
+                metadata={"source": "github", "repo": repo_full_name, "type": "pull_request", "pr_number": pr["number"], "url": pr["html_url"]},
+            ))
     except Exception:
         logger.exception("Failed to load PRs for %s", repo_full_name)
     return docs
 
 
-def _load_readme(repo_full_name: str) -> list[Document]:
-    """Fetch the README as a document."""
-    docs: list[Document] = []
+def _load_readme(repo_full_name: str) -> list[_Document]:
+    docs: list[_Document] = []
     try:
         repo = get_repo(repo_full_name)
         readme = repo.get_readme()
         content = base64.b64decode(readme.content).decode("utf-8", errors="replace")
-        # Truncate very long READMEs.
         if len(content) > 8_000:
             content = content[:8_000] + "\n\n... [truncated]"
-        docs.append(
-            Document(
-                page_content=content,
-                metadata={
-                    "source": "github",
-                    "repo": repo_full_name,
-                    "type": "readme",
-                    "url": readme.html_url,
-                },
-            )
-        )
+        docs.append(_Document(
+            content=content,
+            metadata={"source": "github", "repo": repo_full_name, "type": "readme", "url": readme.html_url},
+        ))
     except Exception:
         logger.exception("Failed to load README for %s", repo_full_name)
     return docs
 
 
-def _load_workflows(repo_full_name: str) -> list[Document]:
-    """Fetch CI/CD workflows as documents."""
-    docs: list[Document] = []
+def _load_workflows(repo_full_name: str) -> list[_Document]:
+    docs: list[_Document] = []
     try:
         wfs = list_workflows(repo_full_name)
         for wf in wfs:
@@ -134,25 +190,17 @@ def _load_workflows(repo_full_name: str) -> list[Document]:
                 f"State: {wf['state']}\n"
                 f"URL: {wf['html_url']}"
             )
-            docs.append(
-                Document(
-                    page_content=text,
-                    metadata={
-                        "source": "github",
-                        "repo": repo_full_name,
-                        "type": "workflow",
-                        "url": wf["html_url"],
-                    },
-                )
-            )
+            docs.append(_Document(
+                content=text,
+                metadata={"source": "github", "repo": repo_full_name, "type": "workflow", "url": wf["html_url"]},
+            ))
     except Exception:
         logger.exception("Failed to load workflows for %s", repo_full_name)
     return docs
 
 
-def _load_repo_listing() -> list[Document]:
-    """Fetch all repos for the authenticated user."""
-    docs: list[Document] = []
+def _load_repo_listing() -> list[_Document]:
+    docs: list[_Document] = []
     try:
         repos = list_repos()
         for r in repos:
@@ -162,17 +210,10 @@ def _load_repo_listing() -> list[Document]:
                 f"Default branch: {r['default_branch']}\n"
                 f"URL: {r['html_url']}"
             )
-            docs.append(
-                Document(
-                    page_content=text,
-                    metadata={
-                        "source": "github",
-                        "repo": r["full_name"],
-                        "type": "repo_listing",
-                        "url": r["html_url"],
-                    },
-                )
-            )
+            docs.append(_Document(
+                content=text,
+                metadata={"source": "github", "repo": r["full_name"], "type": "repo_listing", "url": r["html_url"]},
+            ))
     except Exception:
         logger.exception("Failed to list repos")
     return docs
@@ -184,22 +225,17 @@ def _load_repo_listing() -> list[Document]:
 
 
 def index_repo(repo_full_name: str) -> dict[str, Any]:
-    """Fetch GitHub data for a repo and build a FAISS index."""
-    from .progress import clear_progress, set_progress
-
-    op = "index"
+    """Fetch GitHub data for a repo and build a keyword index."""
     logger.info("Indexing repo: %s", repo_full_name)
-    set_progress(op, "fetch", "Fetching repo metadata and content...", {"repo": repo_full_name})
 
-    # Run all I/O-bound loaders concurrently.
-    loaders = [
+    loaders: list[tuple[Any, ...]] = [
         (_load_repo_metadata, repo_full_name),
         (_load_pull_requests, repo_full_name),
         (_load_readme, repo_full_name),
         (_load_workflows, repo_full_name),
         (_load_repo_listing,),
     ]
-    docs: list[Document] = []
+    docs: list[_Document] = []
     with ThreadPoolExecutor(max_workers=5, thread_name_prefix="rag_loader") as pool:
         futures = [pool.submit(fn, *args) for fn, *args in loaders]
         for future in as_completed(futures):
@@ -208,56 +244,19 @@ def index_repo(repo_full_name: str) -> dict[str, Any]:
             except Exception:
                 logger.exception("Document loader raised an exception")
 
-    set_progress(op, "fetch", f"Loaded {len(docs)} docs, building index...", {"repo": repo_full_name})
-
     if not docs:
-        clear_progress(op)
         return {"status": "error", "message": "No documents fetched."}
 
-    set_progress(op, "embed", "Building embeddings and FAISS index...", {"document_count": len(docs)})
-    embeddings = get_embeddings()
-    store = FAISS.from_documents(docs, embeddings)
+    logger.info("Building keyword index from %d documents", len(docs))
+    store = _DocStore(docs)
 
-    # LRU eviction: drop the oldest store when at capacity.
     if len(_STORES) >= _MAX_STORES:
         _STORES.popitem(last=False)
     _STORES[repo_full_name] = store
-    _STORES.move_to_end(repo_full_name)  # mark as most recently used
+    _STORES.move_to_end(repo_full_name)
 
-    set_progress(op, "save", "Saving index to disk...", {})
-    os.makedirs(_CACHE_DIR, exist_ok=True)
-    store_path = os.path.join(_CACHE_DIR, repo_full_name.replace("/", "_"))
-    store.save_local(store_path)
-
-    clear_progress(op)
     logger.info("Indexed %d documents for %s", len(docs), repo_full_name)
-    return {
-        "status": "indexed",
-        "repo": repo_full_name,
-        "document_count": len(docs),
-    }
-
-
-def _get_store(repo_full_name: str) -> FAISS | None:
-    """Get the FAISS store for a repo, loading from disk if needed (LRU touch on hit)."""
-    if repo_full_name in _STORES:
-        _STORES.move_to_end(repo_full_name)  # mark as recently used
-        return _STORES[repo_full_name]
-
-    store_path = os.path.join(_CACHE_DIR, repo_full_name.replace("/", "_"))
-    if os.path.exists(store_path):
-        embeddings = get_embeddings()
-        store = FAISS.load_local(
-            store_path,
-            embeddings,
-            allow_dangerous_deserialization=True,
-        )
-        if len(_STORES) >= _MAX_STORES:
-            _STORES.popitem(last=False)
-        _STORES[repo_full_name] = store
-        return store
-
-    return None
+    return {"status": "indexed", "repo": repo_full_name, "document_count": len(docs)}
 
 
 # ---------------------------------------------------------------------------
@@ -266,49 +265,33 @@ def _get_store(repo_full_name: str) -> FAISS | None:
 
 
 def query_repo(repo_full_name: str, question: str, k: int = 4) -> list[dict[str, Any]]:
-    """Query the FAISS index for a repo. Auto-indexes if needed."""
-    store = _get_store(repo_full_name)
+    """Query the keyword index for a repo.  Auto-indexes if needed."""
+    store = _STORES.get(repo_full_name)
     if store is None:
-        # Auto-index on first query.
         index_repo(repo_full_name)
-        store = _get_store(repo_full_name)
+        store = _STORES.get(repo_full_name)
 
     if store is None:
         return [{"error": f"No index available for {repo_full_name}"}]
 
-    results = store.similarity_search(question, k=k)
-    return [
-        {
-            "content": doc.page_content,
-            "metadata": doc.metadata,
-        }
-        for doc in results
-    ]
+    return store.search(question, k=k)
 
 
 # ---------------------------------------------------------------------------
-# LangChain tool wrapper (used by the agent)
+# Convenience search across all indexed repos
 # ---------------------------------------------------------------------------
 
 
-@tool
-def search_github_knowledge(query: str) -> str:
-    """Search the indexed GitHub knowledge base for relevant information.
-
-    Use this tool when you need to look up details about repositories,
-    pull requests, README documentation, or CI/CD workflows. The knowledge
-    base is populated by indexing GitHub repos.
-
-    Args:
-        query: Natural language question about the repository data.
-    """
-    # Try all indexed repos.
+def search_knowledge(query: str) -> str:
+    """Search all indexed repos for relevant information."""
     all_results: list[dict[str, Any]] = []
     for repo_name in list(_STORES.keys()):
         all_results.extend(query_repo(repo_name, query, k=3))
 
     if not all_results:
-        return "No indexed repositories found. Use 'index <repo_full_name>' first."
+        return "No indexed repositories found. Use rag_index_repo to index a repository first."
+
+    all_results.sort(key=lambda r: r.get("score", 0), reverse=True)
 
     parts: list[str] = []
     for r in all_results[:6]:
