@@ -290,17 +290,21 @@ openx-agent/                     # Python MCP server package
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `GITHUB_TOKEN` | Yes | — | GitHub fine-grained PAT |
-| `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key for Claude |
-| `ANTHROPIC_MODEL` | No | `claude-sonnet-4-20250514` | Claude model name |
-| `OPENX_ACTIVE_REPO` | No | — | Default repository (`owner/repo`) |
-| `OPENX_WORKSPACE_ROOT` | No | cwd | Local workspace root |
-| `OPENX_LLM_MAX_TOKENS` | No | 768 | Max tokens per LLM call |
-| `OPENX_LLM_TIMEOUT_SEC` | No | 90 | LLM request timeout (seconds) |
-| `GITHUB_BASE_URL` | No | — | GitHub Enterprise API base URL |
+Create a `.env` file in the project root:
 
+```env
+# Required
+GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
+
+# Optional
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+OPENX_ACTIVE_REPO=owner/repo
+OPENX_WORKSPACE_ROOT=/path/to/workspace
+OPENX_LLM_MAX_TOKENS=768
+OPENX_LLM_TIMEOUT_SEC=90
+GITHUB_BASE_URL=https://github.enterprise.api/v3
+```
 ---
 
 ## Contributing
