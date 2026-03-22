@@ -53,7 +53,6 @@ Failing PR detected
 | **LangGraph ReAct agent** | Built-in autonomous agent with multi-step reasoning, tool selection, and error recovery — not a simple chain |
 | **Modular sub-server composition** | 5 namespaced `FastMCP` sub-servers mounted into a root server — clean separation of concerns at the protocol level |
 | **Dual GitHub backend** | `gh` CLI (fast subprocess) with automatic fallback to PyGithub API — best of both worlds for speed and reliability |
-| **Zero-ML knowledge base** | TF-IDF keyword search over in-memory document store — no GPU, no embeddings server, no FAISS. Lightweight and instant |
 | **Thread-safe concurrency** | Thread pool executors for non-blocking I/O, double-checked locking for lazy singletons, O(1) LRU-evicting TTL cache |
 | **Path-traversal guard** | All workspace file operations validated against the workspace root — agents can't escape the sandbox |
 | **Docker-ready** | Multi-stage build with `gh` CLI baked in, health check endpoint, configurable transport via `CMD` override |
@@ -234,13 +233,11 @@ docker run --rm -i --env-file .env openx-mcp --stdio
 </details>
 
 <details>
-<summary><b>Analysis</b> — 1 tool &nbsp;|&nbsp; <b>Knowledge Base</b> — 2 tools</summary>
+<summary><b>Analysis</b> — 1 tool</summary>
 
 | Tool | Description |
 |---|---|
 | `analysis_analyze_repo` | Run full static + AI code analysis |
-| `rag_index_repo` | Index a GitHub repo for keyword search |
-| `rag_search` | Search the knowledge base |
 </details>
 
 <details>
@@ -270,14 +267,12 @@ openx-agent/                     # Python MCP server package
 ├── github_client.py             # GitHub API — PyGithub + httpx + CI healing pipeline
 ├── gh_cli.py                    # gh CLI subprocess wrapper (thread pool)
 ├── workspace.py                 # Sandboxed file I/O and git operations
-├── rag.py                       # TF-IDF knowledge base (zero ML dependencies)
 ├── cache.py                     # O(1) LRU-evicting TTL cache
 ├── config.py                    # Frozen dataclass settings from .env
 ├── tools/                       # MCP tool definitions (namespaced sub-servers)
 │   ├── github.py                #   26 GitHub tools
 │   ├── workspace_tools.py       #   7 workspace tools
 │   ├── analysis.py              #   1 analysis tool
-│   ├── rag_tools.py             #   2 knowledge base tools
 │   └── agent_tools.py           #   1 agent tool (agent_chat)
 └── analysis/                    # Static analysis + AI code review engine
     ├── static_analysis.py       #   Bug/perf/duplication detection

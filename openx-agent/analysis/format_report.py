@@ -25,7 +25,6 @@ _EXT_TO_LANG: dict[str, str] = {
     ".hpp": "cpp",
 }
 
-
 def _read_line(path: str, line_num: int) -> str | None:
     """Return the content of 1-based *line_num* in *path*, or ``None``."""
     try:
@@ -39,10 +38,8 @@ def _read_line(path: str, line_num: int) -> str | None:
         pass
     return None
 
-
 def _lang(path: str) -> str:
     return _EXT_TO_LANG.get(os.path.splitext(path)[1].lower(), "text")
-
 
 def _format_finding(root: str, item: dict, include_snippet: bool = True) -> str:  # noqa: ARG001
     filepath = item.get("file", "")
@@ -54,7 +51,6 @@ def _format_finding(root: str, item: dict, include_snippet: bool = True) -> str:
         if content:
             parts.append(f"  ```{_lang(filepath)}\n  {content}\n  ```")
     return "\n".join(parts)
-
 
 def format_analysis_report(
     root: str,

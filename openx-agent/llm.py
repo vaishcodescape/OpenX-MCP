@@ -1,8 +1,4 @@
-"""LLM factory — provides a ChatAnthropic instance for LangGraph agents.
-
-Uses ``ANTHROPIC_API_KEY`` and ``ANTHROPIC_MODEL`` from the environment (via
-:mod:`config`).  Call :func:`get_llm` to obtain a ready-to-use chat model.
-"""
+"""LLM factory — provides a ChatAnthropic instance for LangGraph agents."""
 
 from __future__ import annotations
 
@@ -15,7 +11,6 @@ from .config import settings
 
 logger = logging.getLogger(__name__)
 
-
 @lru_cache(maxsize=1)
 def get_llm(
     *,
@@ -23,17 +18,7 @@ def get_llm(
     max_tokens: int | None = None,
     temperature: float = 0.0,
 ) -> ChatAnthropic:
-    """Return a cached :class:`ChatAnthropic` instance.
-
-    Parameters
-    ----------
-    model:
-        Override ``ANTHROPIC_MODEL`` (default ``claude-sonnet-4-20250514``).
-    max_tokens:
-        Override ``OPENX_LLM_MAX_TOKENS``.
-    temperature:
-        Sampling temperature.  ``0.0`` for deterministic tool-use.
-    """
+    """Return a cached :class:`ChatAnthropic` instance."""
     resolved_model = model or settings.anthropic_model or "claude-sonnet-4-20250514"
     resolved_tokens = max_tokens or settings.llm_max_tokens or 4096
 

@@ -15,26 +15,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .tools.agent_tools import server as agent_server
-from .tools.analysis import server as analysis_server
-from .tools.github import server as github_server
-from .tools.rag_tools import server as rag_server
-from .tools.workspace_tools import server as workspace_server
+from .tools.agent_tools import register as register_agent_tools
+from .tools.analysis import register as register_analysis_tools
+from .tools.github import register as register_github_tools
+from .tools.workspace_tools import register as register_workspace_tools
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Lifespan — startup / shutdown
-# ---------------------------------------------------------------------------
-
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
@@ -49,11 +44,6 @@ async def lifespan(server: FastMCP):
     except Exception:
         pass
 
-
-# ---------------------------------------------------------------------------
-# Server
-# ---------------------------------------------------------------------------
-
 mcp = FastMCP(
     name="OpenX",
     instructions=(
@@ -61,7 +51,6 @@ mcp = FastMCP(
         "Use github_* tools for repository, PR, issue, and CI/CD operations. "
         "Use workspace_* tools for local file and git operations. "
         "Use analysis_* tools for code analysis. "
-        "Use rag_* tools for knowledge base indexing and search. "
         "Use agent_chat to send natural-language requests to the built-in "
         "LangGraph ReAct agent (Claude-powered) which can autonomously plan "
         "and execute multi-step workflows across all available tools. "
@@ -69,22 +58,12 @@ mcp = FastMCP(
         "repo name — it will detect failures, analyze logs, generate a patch, "
         "commit the fix, and re-run CI automatically."
     ),
-    version="1.1.0",
     lifespan=lifespan,
 )
-
-# Mount domain-specific sub-servers.
-mcp.mount(github_server, namespace="github")
-mcp.mount(workspace_server, namespace="workspace")
-mcp.mount(analysis_server, namespace="analysis")
-mcp.mount(rag_server, namespace="rag")
-mcp.mount(agent_server, namespace="agent")
-
-
-# ---------------------------------------------------------------------------
-# Resources
-# ---------------------------------------------------------------------------
-
+register_github_tools(mcp)
+register_workspace_tools(mcp)
+register_analysis_tools(mcp)
+register_agent_tools(mcp)
 
 @mcp.resource("openx://config")
 def server_config() -> str:
@@ -103,12 +82,10 @@ def server_config() -> str:
         indent=2,
     )
 
-
 @mcp.resource("openx://help")
 def server_help() -> str:
     """OpenX usage guide and full tool reference."""
     return _HELP_TEXT
-
 
 @mcp.resource("github://{owner}/{repo}/readme")
 def repo_readme(owner: str, repo: str) -> str:
@@ -118,14 +95,12 @@ def repo_readme(owner: str, repo: str) -> str:
     result = get_readme(f"{owner}/{repo}")
     return result.get("content", "")
 
-
 @mcp.resource("github://{owner}/{repo}/prs")
 def repo_open_prs(owner: str, repo: str) -> str:
     """Open pull requests for a GitHub repository."""
     from .github_client import list_open_prs
 
     return json.dumps(list_open_prs(f"{owner}/{repo}"), indent=2, default=str)
-
 
 @mcp.resource("github://{owner}/{repo}/issues/{state}")
 def repo_issues(owner: str, repo: str, state: str = "open") -> str:
@@ -134,13 +109,7 @@ def repo_issues(owner: str, repo: str, state: str = "open") -> str:
 
     return json.dumps(list_issues(f"{owner}/{repo}", state), indent=2, default=str)
 
-
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-
-@mcp.prompt
+@mcp.prompt()
 def analyze_repository(repo_path: str = "") -> str:
     """Comprehensive code analysis prompt for a repository."""
     target = f" at `{repo_path}`" if repo_path else ""
@@ -153,8 +122,7 @@ def analyze_repository(repo_path: str = "") -> str:
         "4. Actionable recommendations for improvement"
     )
 
-
-@mcp.prompt
+@mcp.prompt()
 def heal_ci(repo: str, pr_number: int | None = None) -> str:
     """Step-by-step CI/CD self-healing workflow prompt."""
     target = f" PR #{pr_number}" if pr_number else " the first failing PR"
@@ -165,8 +133,7 @@ def heal_ci(repo: str, pr_number: int | None = None) -> str:
         "and re-run CI. Report what was fixed and the outcome."
     )
 
-
-@mcp.prompt
+@mcp.prompt()
 def github_workflow(task: str) -> str:
     """General GitHub automation task prompt."""
     return (
@@ -177,20 +144,9 @@ def github_workflow(task: str) -> str:
         "For local changes: read/write files, then git add/commit/push."
     )
 
-
-# ---------------------------------------------------------------------------
-# Custom HTTP routes (only active with HTTP transport)
-# ---------------------------------------------------------------------------
-
-
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
-
-
-# ---------------------------------------------------------------------------
-# Help text
-# ---------------------------------------------------------------------------
 
 _HELP_TEXT = """\
 OpenX — AI-Powered GitHub Automation MCP Server (LangGraph + Claude)
@@ -241,10 +197,6 @@ Workspace:
 Analysis:
   analysis_analyze_repo       Run full code analysis
 
-Knowledge Base:
-  rag_index_repo              Index a GitHub repo for keyword search
-  rag_search                  Search the knowledge base
-
 Resources:
   openx://config              Server configuration
   openx://help                This help text
@@ -253,17 +205,11 @@ Resources:
   github://{owner}/{repo}/issues/{state}  Issues (open/closed/all)
 """
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:
     """CLI entry point for the OpenX MCP server."""
     transport = "stdio"
     host = "127.0.0.1"
-    port = 8000
+    port = int(os.environ.get("PORT", 8000))
 
     args = sys.argv[1:]
     i = 0
@@ -283,8 +229,9 @@ def main() -> None:
             port = int(args[i])
         i += 1
 
-    mcp.run(transport=transport, host=host, port=port)
-
+    mcp.settings.host = host
+    mcp.settings.port = port
+    mcp.run(transport=transport)
 
 if __name__ == "__main__":
     main()

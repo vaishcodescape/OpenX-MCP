@@ -13,10 +13,6 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
 CODE_EXTENSIONS: frozenset[str] = frozenset({
     ".py", ".js", ".ts", ".tsx", ".jsx",
     ".go", ".java", ".rb", ".rs", ".cs",
@@ -52,11 +48,7 @@ _BUG_HINTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"except\s*:"),   "Bare except may hide errors"),
 ]
 
-
-# ---------------------------------------------------------------------------
 # Data model
-# ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class Issue:
@@ -65,11 +57,7 @@ class Issue:
     file: str
     line: int
 
-
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
-
 
 def _iter_code_files(root: str) -> Iterable[str]:
     """Walk *root*, yielding paths of recognised code files."""
@@ -82,14 +70,12 @@ def _iter_code_files(root: str) -> Iterable[str]:
             if os.path.splitext(name)[1].lower() in CODE_EXTENSIONS:
                 yield os.path.join(base, name)
 
-
 def _read_lines(path: str) -> list[str]:
     try:
         with open(path, encoding="utf-8", errors="ignore") as fh:
             return fh.read().splitlines()
     except OSError:
         return []
-
 
 def _scan_patterns(
     lines: list[str],
@@ -104,14 +90,12 @@ def _scan_patterns(
         if pat.search(line)
     ]
 
-
 def _scan_ai_markers(lines: list[str], path: str) -> list[Issue]:
     return [
         Issue(category="ai_generated", message="Possible AI-generated code marker", file=path, line=idx)
         for idx, line in enumerate(lines, start=1)
         if any(marker in line.lower() for marker in _AI_MARKERS)
     ]
-
 
 def _find_duplicate_blocks(
     path_to_lines: dict[str, list[str]],
@@ -132,12 +116,6 @@ def _find_duplicate_blocks(
         if len(locations) > 1
         for path, line in locations
     ]
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 
 def analyze_static(root: str) -> dict[str, list[dict]]:
     """Single-pass static analysis: read each file once, reuse for all checks.
@@ -162,7 +140,6 @@ def analyze_static(root: str) -> dict[str, list[dict]]:
             {"message": issue.message, "file": issue.file, "line": issue.line}
         )
     return dict(grouped)
-
 
 def file_stats(root: str) -> dict[str, int]:
     """Count code files by extension under *root*."""

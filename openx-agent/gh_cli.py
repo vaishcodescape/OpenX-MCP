@@ -1,4 +1,4 @@
-"""Fast GitHub operations via `gh` CLI (subprocess). Used when available; falls back to PyGithub."""
+"""GitHub operations via `gh` CLI."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
 from typing import Any, Callable, TypeVar
 
 from .config import settings
@@ -16,31 +16,18 @@ from .config import settings
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
-
-# Timeout for a single gh command (seconds).
 _GH_TIMEOUT = 30
-# Max workers for parallel gh calls.
-_EXECUTOR = ThreadPoolExecutor(max_workers=10, thread_name_prefix="gh_cli")
-
-
-# ---------------------------------------------------------------------------
-# Cached env dict — avoid copying all of os.environ on every subprocess call.
-# We cache on the (token, base_url) pair so a config change invalidates it.
-# ---------------------------------------------------------------------------
 
 _gh_env_cache: dict[str, str] | None = None
 _gh_env_cache_key: tuple[str | None, str | None] = (None, None)
 _gh_env_lock = threading.Lock()
 
-
 def _gh_env() -> dict[str, str]:
     global _gh_env_cache, _gh_env_cache_key
     key = (settings.github_token, settings.github_base_url)
-    # Fast path: no lock needed for a cache hit on an immutable key.
     if _gh_env_cache is not None and _gh_env_cache_key == key:
         return _gh_env_cache
     with _gh_env_lock:
-        # Re-check inside lock in case another thread beat us here.
         if _gh_env_cache is not None and _gh_env_cache_key == key:
             return _gh_env_cache
         env = {**os.environ}
@@ -54,7 +41,6 @@ def _gh_env() -> dict[str, str]:
         _gh_env_cache = env
         _gh_env_cache_key = key
     return _gh_env_cache
-
 
 def _run_gh(*args: str, timeout: int = _GH_TIMEOUT) -> str | None:
     """Run gh with args; return stdout or None on failure."""
@@ -74,10 +60,8 @@ def _run_gh(*args: str, timeout: int = _GH_TIMEOUT) -> str | None:
         logger.debug("gh %s exception: %s", " ".join(args), exc)
         return None
 
-
 _gh_available: bool | None = None
 _gh_available_lock = threading.Lock()
-
 
 def available() -> bool:
     """Return True if gh is installed and authenticated (and we have a token)."""
@@ -89,7 +73,6 @@ def available() -> bool:
         _gh_available = False
         return False
     with _gh_available_lock:
-        # Re-check inside lock in case another thread just set it.
         if _gh_available is not None:
             return _gh_available
         try:
@@ -105,7 +88,6 @@ def available() -> bool:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             _gh_available = False
     return _gh_available or False
-
 
 def list_repos(org: str | None = None) -> list[dict[str, Any]] | None:
     """List repos via gh. Returns same shape as github_client.list_repos or None to fall back."""
@@ -133,7 +115,6 @@ def list_repos(org: str | None = None) -> list[dict[str, Any]] | None:
             "html_url": r.get("url", ""),
         })
     return result
-
 
 def list_open_prs(repo_full_name: str, include_ci_status: bool = False) -> list[dict[str, Any]] | None:
     """List open PRs via gh. include_ci_status: if True we still skip (use API fallback for CI)."""
@@ -176,7 +157,6 @@ def list_open_prs(repo_full_name: str, include_ci_status: bool = False) -> list[
         result.append(entry)
     return result
 
-
 def get_pr(repo_full_name: str, number: int) -> dict[str, Any] | None:
     """Get PR details via gh. Returns same shape as github_client.get_pr (best effort)."""
     out = _run_gh(
@@ -212,7 +192,6 @@ def get_pr(repo_full_name: str, number: int) -> dict[str, Any] | None:
         "ci_checks": [],
     }
 
-
 def list_issues(repo_full_name: str, state: str = "open") -> list[dict[str, Any]] | None:
     """List issues via gh."""
     out = _run_gh(
@@ -244,7 +223,6 @@ def list_issues(repo_full_name: str, state: str = "open") -> list[dict[str, Any]
         })
     return result
 
-
 def get_issue(repo_full_name: str, number: int) -> dict[str, Any] | None:
     """Get one issue via gh."""
     out = _run_gh(
@@ -272,10 +250,8 @@ def get_issue(repo_full_name: str, number: int) -> dict[str, Any] | None:
         "labels": label_names,
     }
 
-
 # Allowed first-level gh subcommands for run_gh_command (avoids auth, config, etc.).
 _ALLOWED_GH_SUBCOMMANDS = frozenset({"pr", "issue", "repo", "run", "workflow", "api"})
-
 
 def _run_gh_capture_both(*args: str, timeout: int = _GH_TIMEOUT) -> str | None:
     """Run gh; return combined stdout + stderr or None on failure (so we can parse URL from either stream)."""
@@ -294,12 +270,8 @@ def _run_gh_capture_both(*args: str, timeout: int = _GH_TIMEOUT) -> str | None:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         logger.debug("gh %s exception: %s", " ".join(args), exc)
         return None
-
-
-# Match issue/PR URLs from any GitHub host (github.com or enterprise).
 _ISSUE_URL_RE = re.compile(r"(https?://[^\s/]+/[^/]+/[^/]+/issues/(\d+))")
 _PULL_URL_RE = re.compile(r"(https?://[^\s/]+/[^/]+/[^/]+/pull/(\d+))")
-
 
 def create_issue(repo_full_name: str, title: str, body: str = "", labels: list[str] | None = None) -> dict[str, Any] | None:
     """Create an issue via gh. Returns dict with number, title, state, html_url or None on failure."""
@@ -320,7 +292,6 @@ def create_issue(repo_full_name: str, title: str, body: str = "", labels: list[s
     url, number_str = m.group(1), m.group(2)
     number = int(number_str)
     return {"number": number, "title": title, "state": "open", "html_url": url}
-
 
 def create_pr(
     repo_full_name: str,
@@ -350,7 +321,6 @@ def create_pr(
     url, number_str = m.group(1), m.group(2)
     number = int(number_str)
     return {"number": number, "title": title, "state": "open", "html_url": url}
-
 
 def run_gh_command(command: str, timeout: int = 25) -> str:
     """Run a gh CLI command string (e.g. 'pr list --repo owner/repo'). Returns combined stdout and stderr.
@@ -382,12 +352,3 @@ def run_gh_command(command: str, timeout: int = 25) -> str:
     except OSError as e:
         raise RuntimeError(f"gh command failed: {e}")
 
-
-def run_in_background(func: Callable[..., T], *args: Any, timeout: int | None = None, **kwargs: Any) -> T:
-    """Run a callable in the thread pool; wait for result. Use for non-blocking execution vs main thread."""
-    effective_timeout = timeout if timeout is not None else _GH_TIMEOUT + 5
-    future = _EXECUTOR.submit(func, *args, **kwargs)
-    try:
-        return future.result(timeout=effective_timeout)
-    except FuturesTimeoutError:
-        raise TimeoutError(f"gh operation timed out after {effective_timeout}s")

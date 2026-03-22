@@ -30,7 +30,6 @@ _SYSTEM_PROMPT = (
     "Provide concise, actionable feedback on both immediate code issues and higher-level design concerns."
 )
 
-
 def _compact_summary(summary: dict) -> dict:
     """Trim per-category findings and strip absolute paths to basenames."""
     out: dict = {}
@@ -53,13 +52,11 @@ def _compact_summary(summary: dict) -> dict:
         out[key] = trimmed
     return out
 
-
 def _serialize(summary: dict) -> str:
     text = json.dumps(summary, default=str)
     if len(text) > _MAX_USER_CONTENT_CHARS:
         text = text[: _MAX_USER_CONTENT_CHARS - 50] + '... "[truncated]"'
     return text
-
 
 def analyze_with_ai(summary: dict) -> dict[str, Any]:
     """Send *summary* to Claude and return its code-review findings.

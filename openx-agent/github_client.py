@@ -20,31 +20,12 @@ from . import cache as _cache
 from . import gh_cli
 
 logger = logging.getLogger(__name__)
-
-# CI check conclusions that indicate failure (single source of truth)
 _CHECK_CONCLUSION_FAILED = frozenset({
     "failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale",
 })
 
-
-def _bg(func, *args, timeout=30, **kwargs):
-    """Run a function in the background thread pool to avoid blocking the main thread."""
-    return gh_cli.run_in_background(func, *args, timeout=timeout, **kwargs)
-
-
-def _load_github() -> Any:
-    try:
-        from github import Github  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError(
-            "PyGithub is not installed. Run `pip install -r requirements.txt`."
-        ) from exc
-    return Github
-
-
 _github_client: Any = None
 _github_client_lock = threading.Lock()
-
 
 def _client() -> Any:
     """Return a single shared PyGithub client (thread-safe, lazy init)."""
@@ -54,7 +35,7 @@ def _client() -> Any:
     with _github_client_lock:
         if _github_client is not None:
             return _github_client
-        Github = _load_github()
+        from github import Github
         if not settings.github_token:
             raise RuntimeError("GITHUB_TOKEN is required for GitHub operations")
         if settings.github_base_url:
@@ -63,10 +44,8 @@ def _client() -> Any:
             _github_client = Github(login_or_token=settings.github_token)
     return _github_client
 
-
 _http_client: httpx.Client | None = None
 _http_client_lock = threading.Lock()
-
 
 def _get_http_client() -> httpx.Client:
     """Shared HTTP client for API requests (connection reuse, thread-safe)."""
@@ -79,10 +58,8 @@ def _get_http_client() -> httpx.Client:
         _http_client = httpx.Client(timeout=60, follow_redirects=True)
     return _http_client
 
-
 def get_repo(full_name: str) -> Any:
     return _client().get_repo(full_name)
-
 
 def _ci_status_from_check_runs(runs: list[dict[str, Any]]) -> str:
     """Derive overall CI status from check_runs list. Returns 'failure' | 'success' | 'pending'."""
@@ -93,14 +70,12 @@ def _ci_status_from_check_runs(runs: list[dict[str, Any]]) -> str:
         return "success"
     return "pending"
 
-
 @lru_cache(maxsize=1)
 def _api_base_url() -> str:
     """Cached: computed once per unique settings value."""
     if settings.github_base_url:
         return settings.github_base_url.rstrip("/")
     return "https://api.github.com"
-
 
 @lru_cache(maxsize=1)
 def _web_base_url() -> str:
@@ -113,13 +88,11 @@ def _web_base_url() -> str:
         base = base.split("/api/")[0]
     return base.rstrip("/")
 
-
 # Cached base headers (Authorization + Accept + version). Built once per token.
 # Extra headers (e.g. diff Accept) are merged at call site without mutating the cache.
 _cached_headers: dict[str, str] | None = None
 _cached_headers_token: str | None = None
 _headers_lock = threading.Lock()
-
 
 def _base_headers() -> dict[str, str]:
     """Return the cached base headers dict, rebuilding only when the token changes."""
@@ -141,13 +114,11 @@ def _base_headers() -> dict[str, str]:
         _cached_headers_token = token
     return _cached_headers
 
-
 def _api_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
     base = _base_headers()
     if extra:
         return {**base, **extra}
     return base
-
 
 def _api_request(method: str, path: str, *, json_body: dict[str, Any] | None = None) -> httpx.Response:
     url = f"{_api_base_url()}{path}"
@@ -156,11 +127,10 @@ def _api_request(method: str, path: str, *, json_body: dict[str, Any] | None = N
     resp.raise_for_status()
     return resp
 
-
 def list_repos(org: str | None = None) -> list[dict[str, Any]]:
     def _fetch():
         if gh_cli.available():
-            result = gh_cli.run_in_background(gh_cli.list_repos, org)
+            result = gh_cli.list_repos(org)
             if result is not None:
                 return result
         gh = _client()
@@ -172,7 +142,6 @@ def list_repos(org: str | None = None) -> list[dict[str, Any]]:
     cache_key = f"list_repos:{org or 'user'}"
     return _cache.cached_list(cache_key, _cache.CACHE_TTL_LIST, _fetch)
 
-
 def list_open_prs(
     repo_full_name: str,
     include_ci_status: bool = False,
@@ -181,9 +150,8 @@ def list_open_prs(
     """List open PRs. If include_ci_status=True, add ci_status (success/failure/pending) for up to ci_status_max PRs."""
 
     def _fetch() -> list[dict[str, Any]]:
-        # Single availability check — branch once on include_ci_status.
         if gh_cli.available():
-            result = gh_cli.run_in_background(gh_cli.list_open_prs, repo_full_name, include_ci_status)
+            result = gh_cli.list_open_prs(repo_full_name, include_ci_status)
             if result is not None:
                 return result
         repo = get_repo(repo_full_name)
@@ -218,13 +186,12 @@ def list_open_prs(
         return _cache.cached_list(f"list_prs:{repo_full_name}", _cache.CACHE_TTL_LIST, _fetch)
     return _fetch()
 
-
 def get_pr(repo_full_name: str, number: int) -> dict[str, Any]:
     """Fetch PR details including files changed, diff, and CI check status."""
 
     def _fetch() -> dict[str, Any]:
         if gh_cli.available():
-            result = gh_cli.run_in_background(gh_cli.get_pr, repo_full_name, number)
+            result = gh_cli.get_pr(repo_full_name, number)
             if result is not None:
                 return result
         repo = get_repo(repo_full_name)
@@ -301,24 +268,17 @@ def get_pr(repo_full_name: str, number: int) -> dict[str, Any]:
 
     return _cache.cached_pr(repo_full_name, number, _fetch)
 
-
 def comment_pr(repo_full_name: str, number: int, body: str) -> dict[str, Any]:
-    def _do():
-        repo = get_repo(repo_full_name)
-        pr = repo.get_pull(number)
-        comment = pr.create_issue_comment(body)
-        return {"id": comment.id, "html_url": comment.html_url}
-    return _bg(_do)
-
+    repo = get_repo(repo_full_name)
+    pr = repo.get_pull(number)
+    comment = pr.create_issue_comment(body)
+    return {"id": comment.id, "html_url": comment.html_url}
 
 def merge_pr(repo_full_name: str, number: int, method: str = "merge") -> dict[str, Any]:
-    def _do():
-        repo = get_repo(repo_full_name)
-        pr = repo.get_pull(number)
-        result = pr.merge(merge_method=method)
-        return {"merged": result.merged, "message": result.message}
-    return _bg(_do)
-
+    repo = get_repo(repo_full_name)
+    pr = repo.get_pull(number)
+    result = pr.merge(merge_method=method)
+    return {"merged": result.merged, "message": result.message}
 
 def create_pull(
     repo_full_name: str,
@@ -334,34 +294,25 @@ def create_pull(
     # Try gh CLI first (fast, non-blocking subprocess).
     if gh_cli.available():
         try:
-            result = gh_cli.run_in_background(
-                gh_cli.create_pr, repo_full_name, title, head, base, body, timeout=25,
-            )
+            result = gh_cli.create_pr(repo_full_name, title, head, base, body, timeout=25)
             if result is not None:
                 return result
         except Exception:
             pass  # Fall through to PyGithub.
-    def _do():
-        try:
-            repo = get_repo(repo_full_name)
-            pr = repo.create_pull(title=title, body=body or None, head=head, base=base)
-            web_base = _web_base_url()
-            html_url = f"{web_base}/{repo_full_name}/pull/{pr.number}"
-            return {
-                "repo_full_name": repo_full_name,
-                "number": pr.number,
-                "title": title,
-                "state": "open",
-                "html_url": html_url,
-            }
-        except Exception as e:
-            return {"status": "error", "message": _github_error_message(e, for_issues=False)}
-    return _bg(_do)
-
-
-# ---------------------------------------------------------------------------
-# README (get / update)
-# ---------------------------------------------------------------------------
+    try:
+        repo = get_repo(repo_full_name)
+        pr = repo.create_pull(title=title, body=body or None, head=head, base=base)
+        web_base = _web_base_url()
+        html_url = f"{web_base}/{repo_full_name}/pull/{pr.number}"
+        return {
+            "repo_full_name": repo_full_name,
+            "number": pr.number,
+            "title": title,
+            "state": "open",
+            "html_url": html_url,
+        }
+    except Exception as e:
+        return {"status": "error", "message": _github_error_message(e, for_issues=False)}
 
 def get_readme(repo_full_name: str, ref: str | None = None) -> dict[str, Any]:
     """Get README content. ref = branch/tag/SHA or None for default branch."""
@@ -374,7 +325,6 @@ def get_readme(repo_full_name: str, ref: str | None = None) -> dict[str, Any]:
         "sha": readme.sha,
         "html_url": readme.html_url,
     }
-
 
 def update_readme(repo_full_name: str, content: str, branch: str | None = None, message: str = "docs: update README") -> dict[str, Any]:
     """Create or update README in the repo. branch = target branch or default."""
@@ -393,11 +343,7 @@ def update_readme(repo_full_name: str, content: str, branch: str | None = None, 
             return {"status": "created", "path": "README.md", "branch": ref}
         raise
 
-
-# ---------------------------------------------------------------------------
 # GitHub Issues
-# ---------------------------------------------------------------------------
-
 
 def list_issues(
     repo_full_name: str,
@@ -405,7 +351,7 @@ def list_issues(
 ) -> list[dict[str, Any]]:
     """List issues in a repository. state: open, closed, or all."""
     if gh_cli.available():
-        result = gh_cli.run_in_background(gh_cli.list_issues, repo_full_name, state)
+        result = gh_cli.list_issues(repo_full_name, state)
         if result is not None:
             return result
     repo = get_repo(repo_full_name)
@@ -422,11 +368,10 @@ def list_issues(
         for i in issues
     ]
 
-
 def get_issue(repo_full_name: str, number: int) -> dict[str, Any]:
     """Get a single issue by number."""
     if gh_cli.available():
-        result = gh_cli.run_in_background(gh_cli.get_issue, repo_full_name, number)
+        result = gh_cli.get_issue(repo_full_name, number)
         if result is not None:
             return result
     repo = get_repo(repo_full_name)
@@ -441,7 +386,6 @@ def get_issue(repo_full_name: str, number: int) -> dict[str, Any]:
         "labels": [lb.name for lb in (issue.labels or [])],
     }
 
-
 def _github_error_message(exc: Exception, for_issues: bool = True) -> str:
     """Return error message; append fine-grained token hint for permission-like errors."""
     msg = str(exc)
@@ -454,7 +398,6 @@ def _github_error_message(exc: Exception, for_issues: bool = True) -> str:
         )
         msg = msg.rstrip(".") + "." + hint
     return msg
-
 
 def create_issue(
     repo_full_name: str,
@@ -469,50 +412,39 @@ def create_issue(
     # Try gh CLI first (fast, non-blocking subprocess).
     if gh_cli.available():
         try:
-            result = gh_cli.run_in_background(
-                gh_cli.create_issue, repo_full_name, title, body, labels, timeout=20,
-            )
+            result = gh_cli.create_issue(repo_full_name, title, body, labels, timeout=20)
             if result is not None:
                 return result
         except Exception:
             pass  # Fall through to PyGithub.
-    def _do():
-        try:
-            repo = get_repo(repo_full_name)
-            issue = repo.create_issue(title=title, body=body or None, labels=labels or [])
-            web_base = _web_base_url()
-            html_url = f"{web_base}/{repo_full_name}/issues/{issue.number}"
-            return {
-                "repo_full_name": repo_full_name,
-                "number": issue.number,
-                "title": title,
-                "state": "open",
-                "html_url": html_url,
-            }
-        except Exception as e:
-            return {"status": "error", "message": _github_error_message(e, for_issues=True)}
-    return _bg(_do)
-
+    try:
+        repo = get_repo(repo_full_name)
+        issue = repo.create_issue(title=title, body=body or None, labels=labels or [])
+        web_base = _web_base_url()
+        html_url = f"{web_base}/{repo_full_name}/issues/{issue.number}"
+        return {
+            "repo_full_name": repo_full_name,
+            "number": issue.number,
+            "title": title,
+            "state": "open",
+            "html_url": html_url,
+        }
+    except Exception as e:
+        return {"status": "error", "message": _github_error_message(e, for_issues=True)}
 
 def comment_issue(repo_full_name: str, number: int, body: str) -> dict[str, Any]:
     """Add a comment to an issue (or PR; issues and PRs share the same comment API)."""
-    def _do():
-        repo = get_repo(repo_full_name)
-        issue = repo.get_issue(number)
-        comment = issue.create_comment(body)
-        return {"id": comment.id, "html_url": comment.html_url}
-    return _bg(_do)
-
+    repo = get_repo(repo_full_name)
+    issue = repo.get_issue(number)
+    comment = issue.create_comment(body)
+    return {"id": comment.id, "html_url": comment.html_url}
 
 def close_issue(repo_full_name: str, number: int) -> dict[str, Any]:
     """Close an issue."""
-    def _do():
-        repo = get_repo(repo_full_name)
-        issue = repo.get_issue(number)
-        issue.edit(state="closed")
-        return {"number": issue.number, "state": "closed"}
-    return _bg(_do)
-
+    repo = get_repo(repo_full_name)
+    issue = repo.get_issue(number)
+    issue.edit(state="closed")
+    return {"number": issue.number, "state": "closed"}
 
 def list_workflows(repo_full_name: str) -> list[dict[str, Any]]:
     repo = get_repo(repo_full_name)
@@ -528,13 +460,11 @@ def list_workflows(repo_full_name: str) -> list[dict[str, Any]]:
         for wf in workflows
     ]
 
-
 def trigger_workflow(repo_full_name: str, workflow_id: int, ref: str, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
     repo = get_repo(repo_full_name)
     workflow = repo.get_workflow(workflow_id)
     workflow.create_dispatch(ref=ref, inputs=inputs or {})
     return {"status": "dispatched"}
-
 
 def list_workflow_runs(repo_full_name: str, workflow_id: int) -> list[dict[str, Any]]:
     repo = get_repo(repo_full_name)
@@ -552,7 +482,6 @@ def list_workflow_runs(repo_full_name: str, workflow_id: int) -> list[dict[str, 
         for run in runs
     ]
 
-
 def get_workflow_run(repo_full_name: str, run_id: int) -> dict[str, Any]:
     repo = get_repo(repo_full_name)
     run = repo.get_workflow_run(run_id)
@@ -566,13 +495,11 @@ def get_workflow_run(repo_full_name: str, run_id: int) -> dict[str, Any]:
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
     }
 
-
 def _extract_run_id(details_url: str | None) -> int | None:
     if not details_url:
         return None
     match = re.search(r"/runs/(\d+)", details_url)
     return int(match.group(1)) if match else None
-
 
 def get_failing_prs(repo_full_name: str) -> list[dict[str, Any]]:
     """List PRs with failing CI. Fires check-runs + status requests concurrently per PR."""
@@ -651,7 +578,6 @@ def get_failing_prs(repo_full_name: str) -> list[dict[str, Any]]:
     results.sort(key=lambda x: x["pr_number"])
     return results
 
-
 def get_ci_logs(repo_full_name: str, workflow_run_id: int) -> str:
     resp = _api_request(
         "GET",
@@ -669,7 +595,6 @@ def get_ci_logs(repo_full_name: str, workflow_run_id: int) -> str:
                 raw = fh.read().decode("utf-8", errors="replace")
             chunks.append(f"===== {name} =====\n{raw.strip()}\n")
     return "\n".join(chunks).strip()
-
 
 def analyze_ci_failure(logs: str) -> dict[str, str]:
     if not logs.strip():
@@ -716,10 +641,8 @@ def analyze_ci_failure(logs: str) -> dict[str, str]:
     tail = "\n".join(logs.strip().splitlines()[-10:])
     return {"error_type": "unknown", "file_hint": file_hint, "reason": tail[:400]}
 
-
 def _decode_content(encoded: str) -> str:
     return base64.b64decode(encoded).decode("utf-8", errors="replace")
-
 
 def _strip_file_hint(file_hint: str) -> tuple[str, int | None]:
     if ":" in file_hint:
@@ -727,7 +650,6 @@ def _strip_file_hint(file_hint: str) -> tuple[str, int | None]:
         if line.isdigit():
             return path, int(line)
     return file_hint, None
-
 
 def _snippet(lines: list[str], line_no: int | None, radius: int = 5) -> tuple[str, int, int]:
     if not lines:
@@ -740,7 +662,6 @@ def _snippet(lines: list[str], line_no: int | None, radius: int = 5) -> tuple[st
         end = min(len(lines), line_no + radius)
     snippet = "\n".join(lines[start - 1:end])
     return snippet, start, end
-
 
 def locate_code_context(repo_full_name: str, error_context: dict[str, Any]) -> dict[str, Any]:
     repo = get_repo(repo_full_name)
@@ -793,7 +714,6 @@ def locate_code_context(repo_full_name: str, error_context: dict[str, Any]) -> d
         "contexts": contexts,
     }
 
-
 def _parse_unified_diff(patch: str) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
     lines = patch.splitlines()
@@ -833,12 +753,10 @@ def _parse_unified_diff(patch: str) -> list[dict[str, Any]]:
         i += 1
     return files
 
-
 def _normalize_patch_path(path: str) -> str:
     if path.startswith("a/") or path.startswith("b/"):
         return path[2:]
     return path
-
 
 def _apply_hunks(original: str, hunks: list[dict[str, Any]]) -> str:
     src = original.splitlines(keepends=True)
@@ -870,7 +788,6 @@ def _apply_hunks(original: str, hunks: list[dict[str, Any]]) -> str:
                 raise ValueError(f"Unsupported patch line prefix: {tag}")
     out.extend(src[src_idx:])
     return "".join(out)
-
 
 def generate_fix_patch(code_context: Any, error: dict[str, Any]) -> str:
     data = code_context
@@ -925,7 +842,6 @@ def generate_fix_patch(code_context: Any, error: dict[str, Any]) -> str:
 
     return ""
 
-
 def apply_fix_to_pr(repo_full_name: str, pr_number: int, patch: str) -> dict[str, Any]:
     if not patch.strip():
         raise ValueError("Patch is empty")
@@ -973,14 +889,12 @@ def apply_fix_to_pr(repo_full_name: str, pr_number: int, patch: str) -> dict[str
 
     return {"status": "applied", "branch": branch, "commits": commits}
 
-
 def rerun_ci(repo_full_name: str, workflow_run_id: int) -> dict[str, Any]:
     _api_request(
         "POST",
         f"/repos/{repo_full_name}/actions/runs/{workflow_run_id}/rerun",
     )
     return {"status": "rerun_requested", "workflow_run_id": workflow_run_id}
-
 
 def heal_failing_pr(repo_full_name: str, pr_number: int | None = None) -> dict[str, Any]:
     """Run full CI healing pipeline: find failing PR -> get logs -> analyze ->

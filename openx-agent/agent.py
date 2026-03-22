@@ -3,7 +3,7 @@
 Exposes a single :func:`run_agent` entry-point that the MCP tool layer can
 call.  The agent uses ``create_react_agent`` from ``langgraph.prebuilt`` with
 a ``ChatAnthropic`` model and LangChain tool wrappers around the core OpenX
-business logic (GitHub operations, knowledge-base search, workspace I/O).
+business logic (GitHub operations, workspace I/O, CI healing).
 """
 
 from __future__ import annotations
@@ -20,18 +20,11 @@ from .llm import get_llm
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# LangChain tool wrappers (thin shims around the existing business logic)
-# ---------------------------------------------------------------------------
-
-
 @tool
 def list_repos(org: str | None = None) -> list[dict[str, Any]]:
     """List GitHub repositories for the authenticated user or an organisation."""
     from .github_client import list_repos as _list_repos
     return _list_repos(org)
-
 
 @tool
 def list_open_prs(repo: str) -> list[dict[str, Any]]:
@@ -39,13 +32,11 @@ def list_open_prs(repo: str) -> list[dict[str, Any]]:
     from .github_client import list_open_prs as _list_open_prs
     return _list_open_prs(repo)
 
-
 @tool
 def get_pr(repo: str, number: int) -> dict[str, Any]:
     """Get pull-request details including diff and CI status."""
     from .github_client import get_pr as _get_pr
     return _get_pr(repo, number)
-
 
 @tool
 def create_issue(repo: str, title: str, body: str = "", labels: list[str] | None = None) -> dict[str, Any]:
@@ -53,27 +44,11 @@ def create_issue(repo: str, title: str, body: str = "", labels: list[str] | None
     from .github_client import create_issue as _create_issue
     return _create_issue(repo, title, body, labels)
 
-
 @tool
 def list_issues(repo: str, state: str = "open") -> list[dict[str, Any]]:
     """List issues in a repository (state: open, closed, all)."""
     from .github_client import list_issues as _list_issues
     return _list_issues(repo, state)
-
-
-@tool
-def search_knowledge(query: str) -> str:
-    """Search the indexed knowledge base for relevant repository information."""
-    from .rag import search_knowledge as _search
-    return _search(query)
-
-
-@tool
-def index_repo(repo: str) -> dict[str, Any]:
-    """Index a GitHub repository into the knowledge base for later search."""
-    from .rag import index_repo as _index
-    return _index(repo)
-
 
 @tool
 def get_readme(repo: str) -> dict[str, Any]:
@@ -81,13 +56,11 @@ def get_readme(repo: str) -> dict[str, Any]:
     from .github_client import get_readme as _get_readme
     return _get_readme(repo)
 
-
 @tool
 def heal_failing_pr(repo: str, pr_number: int | None = None) -> dict[str, Any]:
     """Auto-heal a failing PR: detect failure, generate fix, commit, re-run CI."""
     from .github_client import heal_failing_pr as _heal
     return _heal(repo, pr_number)
-
 
 @tool
 def read_file(path: str, repo_path: str = "") -> str:
@@ -95,13 +68,11 @@ def read_file(path: str, repo_path: str = "") -> str:
     from .workspace import read_file as _read_file
     return _read_file(repo_path, path)
 
-
 @tool
 def write_file(path: str, content: str, repo_path: str = "") -> dict[str, Any]:
     """Write content to a file in the local workspace."""
     from .workspace import write_file as _write_file
     return _write_file(repo_path, path, content)
-
 
 @tool
 def list_dir(repo_path: str = "", subdir: str = "") -> list[dict[str, Any]]:
@@ -109,13 +80,11 @@ def list_dir(repo_path: str = "", subdir: str = "") -> list[dict[str, Any]]:
     from .workspace import list_dir as _list_dir
     return _list_dir(repo_path, subdir)
 
-
 @tool
 def git_status(repo_path: str = "") -> str:
     """Show git status and diff stat for the workspace."""
     from .workspace import git_status as _git_status
     return _git_status(repo_path)
-
 
 AGENT_TOOLS = [
     list_repos,
@@ -123,8 +92,6 @@ AGENT_TOOLS = [
     get_pr,
     create_issue,
     list_issues,
-    search_knowledge,
-    index_repo,
     get_readme,
     heal_failing_pr,
     read_file,
@@ -136,16 +103,13 @@ AGENT_TOOLS = [
 _SYSTEM_MESSAGE = (
     "You are OpenX, an AI-powered GitHub automation assistant. "
     "You have access to tools for GitHub operations (repos, PRs, issues, CI), "
-    "a knowledge-base search over indexed repositories, local workspace file I/O, "
-    "and CI self-healing capabilities.\n\n"
+    "local workspace file I/O, and CI self-healing capabilities.\n\n"
     "Guidelines:\n"
     "- Use the available tools to answer questions and complete tasks.\n"
-    "- When asked about a repository, index it first if needed, then search.\n"
     "- For CI failures, use heal_failing_pr for end-to-end automated fixing.\n"
     "- Be concise and actionable in your responses.\n"
     "- If a tool call fails, explain the error and suggest alternatives."
 )
-
 
 def _build_agent():
     """Construct and return the LangGraph ReAct agent graph."""
@@ -156,9 +120,7 @@ def _build_agent():
         prompt=_SYSTEM_MESSAGE,
     )
 
-
 _agent = None
-
 
 def _get_agent():
     """Lazy-initialise the agent (avoids import-time API key checks)."""
@@ -167,27 +129,8 @@ def _get_agent():
         _agent = _build_agent()
     return _agent
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 def run_agent(message: str, *, thread_id: str = "default") -> str:
-    """Send *message* to the LangGraph agent and return the final response text.
-
-    Parameters
-    ----------
-    message:
-        User's natural-language request.
-    thread_id:
-        Conversation thread identifier (for future memory/checkpointing).
-
-    Returns
-    -------
-    str
-        The agent's final text response.
-    """
+    """Send *message* to the LangGraph agent and return the final response text."""
     agent = _get_agent()
 
     logger.info("Agent invocation  thread=%s  message=%s", thread_id, message[:120])

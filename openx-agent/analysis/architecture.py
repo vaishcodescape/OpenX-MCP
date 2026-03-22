@@ -7,16 +7,11 @@ import os
 from collections import Counter
 
 from .static_analysis import SKIP_DIRS, _iter_code_files
-
-# Flags a file as "large" when it exceeds this size.
 _LARGE_FILE_BYTES = 500_000
 
 _TEST_DIRS: frozenset[str] = frozenset({"test", "tests", "__tests__", "spec", "specs"})
 _TEST_NAME_FRAGMENTS: tuple[str, ...] = ("test_", "test-", "_test", "spec_", ".test.", ".spec.")
-
-# Directories that should never be walked when scanning for tests / large files.
 _WALK_SKIP: frozenset[str] = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv"})
-
 
 def detect_frameworks(root: str) -> list[str]:
     """Detect stacks from lock-files and config files in *root*."""
@@ -73,7 +68,6 @@ def detect_frameworks(root: str) -> list[str]:
     # Preserve discovery order, remove duplicates.
     return list(dict.fromkeys(frameworks))
 
-
 def detect_risks(root: str) -> list[str]:
     """Return a list of risk descriptions (large files, missing tests, etc.)."""
     risks: list[str] = []
@@ -106,7 +100,6 @@ def detect_risks(root: str) -> list[str]:
 
     return risks
 
-
 def _architecture_insights(language_breakdown: dict[str, int], module_depths: Counter[int]) -> list[str]:
     if not language_breakdown:
         return ["No code files found for architecture insights"]
@@ -125,15 +118,12 @@ def _architecture_insights(language_breakdown: dict[str, int], module_depths: Co
 
     return notes
 
-
 def summarize_architecture(root: str) -> dict:
     """Return a summary dict covering dirs, LOC, languages, frameworks, and risks."""
     top_level_dirs = sorted(
         e for e in os.listdir(root)
         if not e.startswith(".") and os.path.isdir(os.path.join(root, e))
     )
-
-    # Single code-file walk: count lines, extensions, and nesting depth.
     file_count = 0
     total_lines = 0
     language_breakdown: Counter[str] = Counter()
