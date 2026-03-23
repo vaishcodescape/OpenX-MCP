@@ -281,8 +281,6 @@ ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 OPENX_ACTIVE_REPO=owner/repo
 OPENX_WORKSPACE_ROOT=/path/to/workspace
-OPENX_LLM_MAX_TOKENS=768
-OPENX_LLM_TIMEOUT_SEC=90
 GITHUB_BASE_URL=https://github.enterprise.api/v3
 ```
 ---
