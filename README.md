@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="openx-mcp.png" alt="OpenX MCP Architecture" width="800"/>
+  <img src="openx-architecture.png" alt="OpenX MCP Architecture" width="800"/>
 </p>
 
 ---
