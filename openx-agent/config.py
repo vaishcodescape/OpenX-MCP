@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -16,8 +15,10 @@ class Settings:
     workspace_root: str = os.getenv("OPENX_WORKSPACE_ROOT", os.getcwd())
     active_repo: str | None = os.getenv("OPENX_ACTIVE_REPO")
 
+
 settings = Settings()
 config_settings = settings
+
 
 def resolve_repo(repo: str | None, *, required: bool = True) -> str:
     """Return a canonical owner/repo string."""
