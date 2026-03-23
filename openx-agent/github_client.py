@@ -83,7 +83,7 @@ def _web_base_url() -> str:
     base = (settings.github_base_url or "").strip().rstrip("/")
     if not base:
         return "https://github.com"
-    # e.g. https://github.enterprise.com/api/v3 -> https://github.enterprise.com
+    
     if "/api/v3" in base or "/api/" in base:
         base = base.split("/api/")[0]
     return base.rstrip("/")
