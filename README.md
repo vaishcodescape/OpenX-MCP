@@ -8,13 +8,12 @@
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-5A67D8" alt="MCP" />
   <img src="https://img.shields.io/badge/Claude-Anthropic_API-D97706?logo=anthropic&logoColor=white" alt="Anthropic" />
-  <img src="https://img.shields.io/badge/LangGraph-ReAct_Agent-1C3C3C?logo=langchain&logoColor=white" alt="LangGraph" />
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT" />
 </p>
 
 <p align="center">
-  <b>37 tools</b> &middot; <b>5 resources</b> &middot; <b>3 prompts</b> &middot; <b>1 autonomous agent</b>
+  <b>34 tools</b> &middot; <b>5 resources</b> &middot; <b>3 prompts</b>
 </p>
 
 <p align="center">
@@ -25,7 +24,7 @@
 
 ## Why OpenX?
 
-OpenX is a production-grade [Model Context Protocol](https://modelcontextprotocol.io) server that turns any MCP client (Claude Desktop, Cursor, or custom) into a full GitHub automation powerhouse. It doesn't just wrap the GitHub API — it **reasons, plans, and acts** autonomously through a LangGraph ReAct agent backed by Claude.
+OpenX is a production-grade [Model Context Protocol](https://modelcontextprotocol.io) server that turns any MCP client (Claude Desktop, Cursor, or custom) into a full GitHub automation powerhouse. It provides a comprehensive suite of tools for repository management, PRs, issues, and autonomous CI/CD self-healing.
 
 ### Autonomous CI/CD Self-Healing
 
@@ -50,12 +49,11 @@ Failing PR detected
 | Engineering Decision | Why It Matters |
 |---|---|
 | **Pure MCP architecture** | No REST API wrapper — native `stdio`, `streamable-http`, and `SSE` transports. Plug into any MCP client without glue code |
-| **LangGraph ReAct agent** | Built-in autonomous agent with multi-step reasoning, tool selection, and error recovery — not a simple chain |
-| **Modular sub-server composition** | 5 namespaced `FastMCP` sub-servers mounted into a root server — clean separation of concerns at the protocol level |
+| **Modular sub-server composition** | 4 namespaced `FastMCP` sub-servers mounted into a root server — clean separation of concerns at the protocol level |
 | **Dual GitHub backend** | `gh` CLI (fast subprocess) with automatic fallback to PyGithub API — best of both worlds for speed and reliability |
 | **Thread-safe concurrency** | Thread pool executors for non-blocking I/O, double-checked locking for lazy singletons, O(1) LRU-evicting TTL cache |
 | **Path-traversal guard** | All workspace file operations validated against the workspace root — agents can't escape the sandbox |
-| **Docker-ready** | Multi-stage build with `gh` CLI baked in, health check endpoint, configurable transport via `CMD` override |
+| **Docker-ready** | Multi-stage build with `gh` CLI baked in, non-root user for security, health check endpoint, configurable transport via `CMD` override |
 
 ---
 
@@ -64,11 +62,9 @@ Failing PR detected
 | Layer | Technologies |
 |---|---|
 | **Protocol** | FastMCP, Model Context Protocol (stdio / streamable-http / SSE) |
-| **AI / Agent** | LangGraph, LangChain, Anthropic Claude API (`langchain-anthropic`) |
 | **GitHub** | PyGithub, GitHub REST API v3, GitHub CLI (`gh`), httpx |
 | **Analysis** | Custom static analysis engine, AI-powered code review (Claude) |
 | **Infrastructure** | Docker, Pydantic, python-dotenv, thread pool concurrency |
-| **Search** | TF-IDF keyword retrieval, in-memory document store with LRU eviction |
 
 ---
 
@@ -171,14 +167,6 @@ docker run --rm -i --env-file .env openx-mcp --stdio
 ## Full Tool Reference
 
 <details>
-<summary><b>AI Agent</b> — 1 tool</summary>
-
-| Tool | Description |
-|---|---|
-| `agent_chat` | Send a natural-language request to the LangGraph ReAct agent for autonomous multi-step execution |
-</details>
-
-<details>
 <summary><b>GitHub</b> — 18 tools</summary>
 
 | Tool | Description |
@@ -261,19 +249,16 @@ docker run --rm -i --env-file .env openx-mcp --stdio
 
 ```text
 openx-agent/                     # Python MCP server package
-├── server.py                    # FastMCP entry point — mounts 5 sub-servers
-├── agent.py                     # LangGraph ReAct agent (13 tools, Claude)
-├── llm.py                       # ChatAnthropic factory (langchain-anthropic)
+├── server.py                    # FastMCP entry point — mounts 4 sub-servers
 ├── github_client.py             # GitHub API — PyGithub + httpx + CI healing pipeline
 ├── gh_cli.py                    # gh CLI subprocess wrapper (thread pool)
 ├── workspace.py                 # Sandboxed file I/O and git operations
 ├── cache.py                     # O(1) LRU-evicting TTL cache
 ├── config.py                    # Frozen dataclass settings from .env
 ├── tools/                       # MCP tool definitions (namespaced sub-servers)
-│   ├── github.py                #   26 GitHub tools
+│   ├── github.py                #   18 GitHub tools + 8 CI Healing tools
 │   ├── workspace_tools.py       #   7 workspace tools
-│   ├── analysis.py              #   1 analysis tool
-│   └── agent_tools.py           #   1 agent tool (agent_chat)
+│   └── analysis.py              #   1 analysis tool
 └── analysis/                    # Static analysis + AI code review engine
     ├── static_analysis.py       #   Bug/perf/duplication detection
     ├── ai_analysis.py           #   Claude-powered review

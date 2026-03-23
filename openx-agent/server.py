@@ -4,11 +4,6 @@ A pure MCP server exposing tools, resources, and prompts via the Model Context
 Protocol.  Any MCP-compatible client (Claude Desktop, Cursor, etc.) can connect
 and use the full OpenX toolset.
 
-Transports
-----------
-stdio (default)   — ``python -m openx_agent.server``
-streamable-http   — ``python -m openx_agent.server --http``
-sse (legacy)      — ``python -m openx_agent.server --sse``
 """
 
 from __future__ import annotations
@@ -24,7 +19,6 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .tools.agent_tools import register as register_agent_tools
 from .tools.analysis import register as register_analysis_tools
 from .tools.github import register as register_github_tools
 from .tools.workspace_tools import register as register_workspace_tools
@@ -51,9 +45,6 @@ mcp = FastMCP(
         "Use github_* tools for repository, PR, issue, and CI/CD operations. "
         "Use workspace_* tools for local file and git operations. "
         "Use analysis_* tools for code analysis. "
-        "Use agent_chat to send natural-language requests to the built-in "
-        "LangGraph ReAct agent (Claude-powered) which can autonomously plan "
-        "and execute multi-step workflows across all available tools. "
         "For autonomous CI self-healing, call github_heal_failing_pr with the "
         "repo name — it will detect failures, analyze logs, generate a patch, "
         "commit the fix, and re-run CI automatically."
@@ -63,7 +54,6 @@ mcp = FastMCP(
 register_github_tools(mcp)
 register_workspace_tools(mcp)
 register_analysis_tools(mcp)
-register_agent_tools(mcp)
 
 @mcp.resource("openx://config")
 def server_config() -> str:
@@ -149,11 +139,7 @@ async def health_check(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 _HELP_TEXT = """\
-OpenX — AI-Powered GitHub Automation MCP Server (LangGraph + Claude)
-
-AI Agent:
-  agent_chat                  Send a natural-language request to the LangGraph
-                              ReAct agent (Claude-powered, multi-step reasoning)
+OpenX — AI-Powered GitHub Automation MCP Server
 
 GitHub Tools:
   github_list_repos           List repositories
